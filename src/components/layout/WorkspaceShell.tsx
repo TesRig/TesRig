@@ -9,8 +9,9 @@ import { Button } from "../common/Button";
 import { StatusBar } from "../common/StatusBar";
 
 export function WorkspaceShell() {
-  const { project, activeCaseId, activeCase, selectCase, setProject } = useWorkspace();
+  const { project, activeCaseId, activeCase, selectCase, setProject, syncProject } = useWorkspace();
   const [showNewCase, setShowNewCase] = useState(false);
+  const [variantOfCaseId, setVariantOfCaseId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("Project ready");
   const [statusError, setStatusError] = useState(false);
@@ -27,7 +28,7 @@ export function WorkspaceShell() {
     setBusy(true);
     reportStatus("Saving project…");
     try {
-      setProject(await saveProject({ projectId }));
+      syncProject(await saveProject({ projectId }));
       reportStatus("Project saved.");
     } catch (error) {
       reportStatus(toUserMessage(error), true);
@@ -102,7 +103,10 @@ export function WorkspaceShell() {
           </nav>
           <Button
             className="sidebar__new-case"
-            onClick={() => setShowNewCase(true)}
+            onClick={() => {
+              setVariantOfCaseId(null);
+              setShowNewCase(true);
+            }}
             disabled={busy}
           >
             + New Case
@@ -111,16 +115,30 @@ export function WorkspaceShell() {
 
         <main className="main-workspace">
           {activeCase ? (
-            <CaseWorkspace simulationCase={activeCase} />
+            <CaseWorkspace
+              simulationCase={activeCase}
+              onStatus={reportStatus}
+              onCreateVariant={(caseId) => {
+                setVariantOfCaseId(caseId);
+                setShowNewCase(true);
+              }}
+            />
           ) : (
-            <ProjectOverview project={project} />
+            <ProjectOverview project={project} onStatus={reportStatus} />
           )}
         </main>
       </div>
 
       <StatusBar message={status} tone={statusError ? "error" : "neutral"} />
       {showNewCase && (
-        <NewCaseDialog onClose={() => setShowNewCase(false)} onStatus={reportStatus} />
+        <NewCaseDialog
+          variantOfCaseId={variantOfCaseId}
+          onClose={() => {
+            setShowNewCase(false);
+            setVariantOfCaseId(null);
+          }}
+          onStatus={reportStatus}
+        />
       )}
     </div>
   );

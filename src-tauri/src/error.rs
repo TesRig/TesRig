@@ -7,6 +7,10 @@ pub enum AppError {
     InvalidProjectName,
     #[error("Case name is required.")]
     InvalidCaseName,
+    #[error("Select an STL, OBJ, STEP, or STP geometry file.")]
+    UnsupportedGeometryFormat,
+    #[error("Geometry was not found: {0}")]
+    GeometryNotFound(String),
     #[error("The selected file is not a valid TesRig project.")]
     InvalidProjectFormat,
     #[error("Project file was not found: {0}")]
@@ -36,6 +40,8 @@ impl AppError {
         match self {
             Self::InvalidProjectName => "INVALID_PROJECT_NAME",
             Self::InvalidCaseName => "INVALID_CASE_NAME",
+            Self::UnsupportedGeometryFormat => "UNSUPPORTED_GEOMETRY_FORMAT",
+            Self::GeometryNotFound(_) => "GEOMETRY_NOT_FOUND",
             Self::InvalidProjectFormat => "INVALID_PROJECT_FORMAT",
             Self::ProjectNotFound(_) => "PROJECT_NOT_FOUND",
             Self::ProjectAlreadyExists(_) => "PROJECT_ALREADY_EXISTS",

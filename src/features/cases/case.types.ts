@@ -11,6 +11,8 @@ export interface SimulationCase {
   simulationType: SimulationType;
   solver: Solver;
   status: CaseStatus;
+  geometryId: string | null;
+  variantOfCaseId: string | null;
 }
 
 export interface CreateCaseInput {
@@ -19,4 +21,6 @@ export interface CreateCaseInput {
   description: string;
   simulationType: SimulationType;
   solver: Solver;
+  geometryId?: string | null;
+  variantOfCaseId?: string | null;
 }

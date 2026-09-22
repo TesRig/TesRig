@@ -1,4 +1,5 @@
 use super::case::SimulationCase;
+use super::geometry::GeometryAsset;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -31,6 +32,8 @@ pub struct ProjectManifest {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub cases: Vec<CaseReference>,
+    #[serde(default)]
+    pub geometries: Vec<GeometryAsset>,
 }
 
 impl ProjectManifest {
@@ -44,6 +47,7 @@ impl ProjectManifest {
             created_at: now,
             updated_at: now,
             cases: Vec::new(),
+            geometries: Vec::new(),
         }
     }
 }
@@ -59,4 +63,5 @@ pub struct ProjectSummary {
     pub updated_at: DateTime<Utc>,
     pub archive_path: String,
     pub cases: Vec<SimulationCase>,
+    pub geometries: Vec<GeometryAsset>,
 }

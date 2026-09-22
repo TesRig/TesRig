@@ -1,23 +1,75 @@
+import { useEffect, useState } from "react";
+import { Button } from "../../../components/common/Button";
+import { toUserMessage } from "../../../lib/errors/app-error";
+import { useWorkspace } from "../../../stores/workspace.store";
+import { GeometryViewer } from "../../geometry/components/GeometryViewer";
+import { chooseGeometryFile, importGeometry } from "../../geometry/geometry.api";
 import type { ProjectSummary } from "../project.types";
 
-export function ProjectOverview({ project }: { project: ProjectSummary }) {
+interface ProjectOverviewProps {
+  project: ProjectSummary;
+  onStatus: (message: string, isError?: boolean) => void;
+}
+
+export function ProjectOverview({ project, onStatus }: ProjectOverviewProps) {
+  const { syncProject } = useWorkspace();
+  const [selectedId, setSelectedId] = useState(project.geometries[0]?.id ?? null);
+  const [busy, setBusy] = useState(false);
+  const selected = project.geometries.find(({ id }) => id === selectedId) ?? project.geometries[0];
+
+  useEffect(() => {
+    if (!selected && project.geometries[0]) setSelectedId(project.geometries[0].id);
+  }, [project.geometries, selected]);
+
+  async function handleImport() {
+    const sourcePath = await chooseGeometryFile();
+    if (typeof sourcePath !== "string") return;
+    setBusy(true);
+    onStatus("Importing geometry…");
+    try {
+      const updated = await importGeometry({ projectId: project.id, sourcePath });
+      syncProject(updated);
+      const imported = updated.geometries.at(-1);
+      if (imported) setSelectedId(imported.id);
+      onStatus(`Imported “${imported?.name ?? "geometry"}”.`);
+    } catch (error) {
+      onStatus(toUserMessage(error), true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (selected) {
+    return (
+      <section className="geometry-editor">
+        <GeometryViewer
+          projectId={project.id}
+          geometry={selected}
+          geometries={project.geometries}
+          onGeometryChange={setSelectedId}
+        />
+      </section>
+    );
+  }
+
   return (
-    <section className="workspace-content">
-      <header className="workspace-heading">
-        <div>
-          <p className="eyebrow">Project overview</p>
-          <h1>{project.name}</h1>
-          <p>{project.description || "No description provided."}</p>
+    <section className="geometry-editor geometry-editor--empty">
+      <div className="geometry-empty">
+        <div className="geometry-empty__preview" aria-hidden="true">
+          <span className="geometry-empty__cube">◇</span>
+          <span className="geometry-empty__grid" />
         </div>
-      </header>
-      <div className="empty-workspace">
-        <div className="empty-workspace__glyph">＋</div>
-        <h2>{project.cases.length ? "Select a case" : "No cases yet"}</h2>
-        <p>
-          {project.cases.length
-            ? "Choose a case in the project navigator to inspect its metadata."
-            : "Create the first CFD case to begin organizing this simulation project."}
-        </p>
+        <div>
+          <p className="eyebrow">Project geometry</p>
+          <h2>Import your first geometry</h2>
+          <p>
+            Add an STL, OBJ, or STEP model. It will be packaged with the project and can be reused
+            by any case.
+          </p>
+          <Button variant="primary" onClick={handleImport} disabled={busy}>
+            {busy ? "Importing…" : "Choose geometry file"}
+          </Button>
+        </div>
       </div>
     </section>
   );

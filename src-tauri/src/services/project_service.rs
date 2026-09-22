@@ -1,6 +1,7 @@
 use super::archive_service::ArchiveService;
 use super::workspace_service::{OpenWorkspace, WorkspaceService};
 use crate::domain::case::{SimulationCase, SimulationType, Solver};
+use crate::domain::geometry::{GeometryAsset, GeometryFormat};
 use crate::domain::project::{
     CaseReference, ProjectManifest, ProjectSummary, PROJECT_FORMAT_VERSION,
 };
@@ -77,13 +78,37 @@ impl ProjectService {
         description: &str,
         simulation_type: SimulationType,
         solver: Solver,
+        geometry_id: Option<Uuid>,
+        variant_of_case_id: Option<Uuid>,
     ) -> AppResult<SimulationCase> {
         let name = validate_name(name, false)?;
         let workspace = self.workspaces.current_mut()?;
         ensure_project(workspace, project_id)?;
 
-        let simulation_case =
-            SimulationCase::new(name, description.trim().to_owned(), simulation_type, solver);
+        if let Some(geometry_id) = geometry_id {
+            ensure_geometry(workspace, geometry_id)?;
+        }
+        let inherited_geometry = if let Some(source_id) = variant_of_case_id {
+            Some(
+                workspace
+                    .cases
+                    .iter()
+                    .find(|item| item.id == source_id)
+                    .ok_or_else(|| AppError::CaseNotFound(source_id.to_string()))?
+                    .geometry_id,
+            )
+            .flatten()
+        } else {
+            None
+        };
+        let simulation_case = SimulationCase::new(
+            name,
+            description.trim().to_owned(),
+            simulation_type,
+            solver,
+            geometry_id.or(inherited_geometry),
+            variant_of_case_id,
+        );
         let mut next_manifest = workspace.manifest.clone();
         let mut next_cases = workspace.cases.clone();
         next_manifest
@@ -115,6 +140,93 @@ impl ProjectService {
             .cloned()
             .ok_or_else(|| AppError::CaseNotFound(case_id.to_string()))
     }
+
+    pub fn import_geometry(
+        &mut self,
+        project_id: Uuid,
+        case_id: Option<Uuid>,
+        source_path: &Path,
+    ) -> AppResult<ProjectSummary> {
+        let workspace = self.workspaces.current_mut()?;
+        ensure_project(workspace, project_id)?;
+        if !source_path.is_file() {
+            return Err(AppError::missing(source_path));
+        }
+        let extension = source_path
+            .extension()
+            .and_then(|value| value.to_str())
+            .ok_or(AppError::UnsupportedGeometryFormat)?;
+        let format =
+            GeometryFormat::from_extension(extension).ok_or(AppError::UnsupportedGeometryFormat)?;
+        let file_name = source_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or(AppError::UnsupportedGeometryFormat)?
+            .to_owned();
+        let name = source_path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("Geometry")
+            .to_owned();
+        let size_bytes = fs::metadata(source_path).map_err(AppError::io)?.len();
+        let asset = GeometryAsset::new(name, file_name, format, size_bytes);
+
+        if let Some(case_id) = case_id {
+            let target_case = workspace
+                .cases
+                .iter_mut()
+                .find(|item| item.id == case_id)
+                .ok_or_else(|| AppError::CaseNotFound(case_id.to_string()))?;
+            target_case.geometry_id = Some(asset.id);
+            target_case.updated_at = Utc::now();
+        }
+
+        let geometry_directory = workspace.root().join("geometries");
+        fs::create_dir_all(&geometry_directory).map_err(AppError::io)?;
+        fs::copy(
+            source_path,
+            geometry_directory.join(asset.stored_file_name()),
+        )
+        .map_err(AppError::io)?;
+        workspace.manifest.geometries.push(asset);
+        workspace.manifest.updated_at = Utc::now();
+        persist_workspace(workspace)?;
+        Ok(summarize(workspace))
+    }
+
+    pub fn assign_geometry(
+        &mut self,
+        project_id: Uuid,
+        case_id: Uuid,
+        geometry_id: Uuid,
+    ) -> AppResult<ProjectSummary> {
+        let workspace = self.workspaces.current_mut()?;
+        ensure_project(workspace, project_id)?;
+        ensure_geometry(workspace, geometry_id)?;
+        let target_case = workspace
+            .cases
+            .iter_mut()
+            .find(|item| item.id == case_id)
+            .ok_or_else(|| AppError::CaseNotFound(case_id.to_string()))?;
+        target_case.geometry_id = Some(geometry_id);
+        target_case.updated_at = Utc::now();
+        workspace.manifest.updated_at = Utc::now();
+        persist_workspace(workspace)?;
+        Ok(summarize(workspace))
+    }
+
+    pub fn get_geometry_data(&self, project_id: Uuid, geometry_id: Uuid) -> AppResult<Vec<u8>> {
+        let workspace = self.workspaces.current()?;
+        ensure_project(workspace, project_id)?;
+        let geometry = ensure_geometry(workspace, geometry_id)?;
+        fs::read(
+            workspace
+                .root()
+                .join("geometries")
+                .join(geometry.stored_file_name()),
+        )
+        .map_err(AppError::io)
+    }
 }
 
 fn validate_name(value: &str, is_project: bool) -> AppResult<String> {
@@ -144,6 +256,15 @@ fn ensure_project(workspace: &OpenWorkspace, project_id: Uuid) -> AppResult<()> 
     } else {
         Err(AppError::ProjectMismatch)
     }
+}
+
+fn ensure_geometry(workspace: &OpenWorkspace, geometry_id: Uuid) -> AppResult<&GeometryAsset> {
+    workspace
+        .manifest
+        .geometries
+        .iter()
+        .find(|geometry| geometry.id == geometry_id)
+        .ok_or_else(|| AppError::GeometryNotFound(geometry_id.to_string()))
 }
 
 fn persist_workspace(workspace: &OpenWorkspace) -> AppResult<()> {
@@ -213,6 +334,7 @@ fn summarize(workspace: &OpenWorkspace) -> ProjectSummary {
         updated_at: workspace.manifest.updated_at,
         archive_path: workspace.archive_path.to_string_lossy().into_owned(),
         cases: workspace.cases.clone(),
+        geometries: workspace.manifest.geometries.clone(),
     }
 }
 
@@ -261,6 +383,8 @@ mod tests {
                 "Mach 0.2",
                 SimulationType::Cfd,
                 Solver::OpenFOAM,
+                None,
+                None,
             )
             .expect("case creation");
 
@@ -294,9 +418,80 @@ mod tests {
             .create_project("Valid", "", &directory.path().join("valid.tsrig"))
             .expect("valid project");
         let case_error = service
-            .create_case(project.id, "\t", "", SimulationType::Cfd, Solver::OpenFOAM)
+            .create_case(
+                project.id,
+                "\t",
+                "",
+                SimulationType::Cfd,
+                Solver::OpenFOAM,
+                None,
+                None,
+            )
             .expect_err("empty case name must fail");
         assert!(matches!(case_error, AppError::InvalidCaseName));
+    }
+
+    #[test]
+    fn imports_geometry_and_inherits_it_in_a_variant() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let archive_path = directory.path().join("geometry.tsrig");
+        let source_path = directory.path().join("wing.obj");
+        fs::write(&source_path, b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n").expect("geometry fixture");
+
+        let mut service = ProjectService::new();
+        let project = service
+            .create_project("Geometry", "", &archive_path)
+            .expect("project creation");
+        let imported = service
+            .import_geometry(project.id, None, &source_path)
+            .expect("geometry import");
+        let geometry = imported.geometries.first().expect("imported geometry");
+        assert_eq!(geometry.name, "wing");
+        assert_eq!(
+            service
+                .get_geometry_data(project.id, geometry.id)
+                .unwrap()
+                .len(),
+            32
+        );
+
+        let base_case = service
+            .create_case(
+                project.id,
+                "Baseline",
+                "",
+                SimulationType::Cfd,
+                Solver::OpenFOAM,
+                Some(geometry.id),
+                None,
+            )
+            .expect("base case");
+        let variant = service
+            .create_case(
+                project.id,
+                "Baseline Variant",
+                "",
+                SimulationType::Cfd,
+                Solver::OpenFOAM,
+                None,
+                Some(base_case.id),
+            )
+            .expect("variant");
+        assert_eq!(variant.geometry_id, Some(geometry.id));
+        assert_eq!(variant.variant_of_case_id, Some(base_case.id));
+
+        service.close_project();
+        let reopened = service
+            .open_project(&archive_path)
+            .expect("project reopening");
+        assert_eq!(reopened.geometries.len(), 1);
+        assert_eq!(reopened.cases[1], variant);
+        assert_eq!(
+            service
+                .get_geometry_data(reopened.id, geometry.id)
+                .expect("geometry bytes after reopening"),
+            b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"
+        );
     }
 
     #[test]

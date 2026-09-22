@@ -494,6 +494,513 @@ p {
   padding: 52px 0;
 }
 
+.workspace-content--wide {
+  width: min(1120px, calc(100% - 56px));
+  padding-top: 38px;
+}
+
+.geometry-editor {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.geometry-editor > .geometry-viewer {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.geometry-editor--empty {
+  overflow: auto;
+  padding: 42px;
+}
+
+.geometry-editor--empty .geometry-empty {
+  width: min(900px, 100%);
+  min-height: 100%;
+  margin: 0 auto;
+}
+
+.workspace-heading__actions,
+.case-geometry-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.variant-source {
+  display: grid;
+  padding: 12px 14px;
+  border: 1px solid var(--border-primary);
+  border-left: 3px solid var(--status-info);
+  background: var(--bg-elevated);
+  gap: 2px;
+}
+
+.variant-source span,
+.variant-source small {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.form-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.geometry-picker {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+}
+
+.geometry-picker span {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.geometry-empty {
+  display: grid;
+  min-height: 430px;
+  grid-template-columns: minmax(280px, 1.2fr) minmax(260px, 0.8fr);
+  align-items: center;
+  gap: 48px;
+}
+
+.geometry-empty__preview {
+  position: relative;
+  display: grid;
+  height: 310px;
+  overflow: hidden;
+  border: 1px solid var(--border-primary);
+  background: #0d1012;
+  place-items: center;
+  perspective: 500px;
+}
+
+.geometry-empty__grid {
+  position: absolute;
+  right: -8%;
+  bottom: -30%;
+  left: -8%;
+  height: 70%;
+  background-image:
+    linear-gradient(rgb(97 112 124 / 35%) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(97 112 124 / 35%) 1px, transparent 1px);
+  background-size: 28px 28px;
+  transform: rotateX(64deg);
+}
+
+.geometry-empty__cube {
+  z-index: 1;
+  color: #aebac3;
+  font-size: 86px;
+  transform: translateY(-20px) rotate(45deg);
+}
+
+.geometry-empty h2 {
+  margin-bottom: 10px;
+  font-size: 22px;
+}
+
+.geometry-empty p:not(.eyebrow) {
+  max-width: 390px;
+  margin-bottom: 20px;
+  color: var(--text-secondary);
+}
+
+.geometry-library {
+  display: grid;
+  height: calc(100vh - 230px);
+  min-height: 440px;
+  grid-template-columns: 220px minmax(0, 1fr);
+  margin-top: 28px;
+  border: 1px solid var(--border-primary);
+  background: var(--bg-secondary);
+}
+
+.geometry-library__list {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px;
+  border-right: 1px solid var(--border-primary);
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 7px 12px;
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.geometry-list-item {
+  display: grid;
+  width: 100%;
+  grid-template-columns: 25px minmax(0, 1fr);
+  padding: 10px 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  text-align: left;
+}
+
+.geometry-list-item:hover,
+.geometry-list-item.is-active {
+  background: var(--bg-hover);
+}
+
+.geometry-list-item__icon {
+  color: var(--status-info);
+  font-size: 10px;
+}
+
+.geometry-list-item strong,
+.geometry-list-item small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.geometry-list-item strong {
+  font-size: 12px;
+}
+
+.geometry-list-item small {
+  margin-top: 3px;
+  color: var(--text-disabled);
+  font-size: 10px;
+}
+
+.geometry-library__viewer {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+
+.geometry-library__viewer > .geometry-viewer {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.geometry-viewer {
+  position: relative;
+  min-height: 430px;
+  overflow: hidden;
+  background: #0d1012;
+}
+
+.geometry-viewer canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.geometry-viewer__message {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  max-width: 360px;
+  padding: 9px 12px;
+  border: 1px solid var(--border-primary);
+  background: rgb(17 19 21 / 88%);
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: center;
+  transform: translate(-50%, -50%);
+}
+
+.geometry-viewer__hint {
+  position: absolute;
+  right: 12px;
+  bottom: 10px;
+  color: rgb(157 165 173 / 65%);
+  font-size: 9px;
+  pointer-events: none;
+}
+
+.geometry-viewer__toolbar {
+  position: absolute;
+  z-index: 4;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.geometry-viewer__fit {
+  position: static;
+  min-height: 30px;
+  padding: 5px 10px;
+  border: 1px solid rgb(255 255 255 / 28%);
+  border-radius: var(--radius-sm);
+  background: rgb(23 26 29 / 88%);
+  box-shadow: 0 3px 12px rgb(0 0 0 / 28%);
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.geometry-viewer__fit:hover {
+  border-color: rgb(255 255 255 / 55%);
+  background: var(--bg-hover);
+}
+
+.geometry-viewer__fit:focus-visible {
+  outline: 2px solid var(--status-info);
+  outline-offset: 2px;
+}
+
+.up-axis-control {
+  display: flex;
+  align-items: center;
+  height: 30px;
+  padding: 2px;
+  border: 1px solid rgb(255 255 255 / 28%);
+  border-radius: var(--radius-sm);
+  background: rgb(23 26 29 / 88%);
+  box-shadow: 0 3px 12px rgb(0 0 0 / 28%);
+}
+
+.up-axis-control > span {
+  padding: 0 7px;
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
+.up-axis-control button {
+  display: grid;
+  width: 26px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 750;
+  place-items: center;
+}
+
+.up-axis-control button:hover,
+.up-axis-control button.is-active {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.up-axis-control button:focus-visible {
+  outline: 2px solid var(--status-info);
+  outline-offset: 1px;
+}
+
+.model-tree {
+  position: absolute;
+  z-index: 3;
+  top: 12px;
+  left: 12px;
+  display: flex;
+  width: min(290px, calc(100% - 250px));
+  max-height: calc(100% - 160px);
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 18%);
+  border-radius: var(--radius-sm);
+  background: rgb(12 16 19 / 48%);
+  box-shadow: 0 5px 24px rgb(0 0 0 / 22%);
+  backdrop-filter: blur(8px);
+}
+
+.model-tree__title,
+.model-tree__geometry-select {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 10px;
+  border-bottom: 1px solid rgb(255 255 255 / 12%);
+}
+
+.model-tree__title > span {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-tree__title small {
+  color: var(--text-secondary);
+  font-size: 9px;
+}
+
+.model-tree__geometry-select > span {
+  color: var(--text-secondary);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.model-tree__geometry-select select {
+  min-width: 0;
+  flex: 1;
+  padding: 3px 22px 3px 7px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 650;
+  text-align: right;
+}
+
+.model-tree__geometry-select option {
+  background: var(--bg-secondary);
+}
+
+.model-tree__content {
+  min-height: 34px;
+  overflow: auto;
+  padding: 5px 0 7px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.model-tree__content > span {
+  display: block;
+  padding: 7px 10px;
+}
+
+.model-tree__branch summary,
+.model-tree__leaf {
+  display: flex;
+  min-height: 27px;
+  align-items: center;
+  gap: 7px;
+  padding-top: 4px;
+  padding-right: 9px;
+  padding-bottom: 4px;
+}
+
+.model-tree__branch summary {
+  color: var(--text-primary);
+  cursor: pointer;
+  list-style: none;
+}
+
+.model-tree__branch summary::-webkit-details-marker {
+  display: none;
+}
+
+.model-tree__branch summary::before {
+  width: 9px;
+  color: var(--text-disabled);
+  content: "›";
+  font-size: 15px;
+  line-height: 1;
+  transform: rotate(0deg);
+  transition: transform 120ms ease;
+}
+
+.model-tree__branch[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.model-tree__branch summary:hover,
+.model-tree__leaf:hover {
+  background: rgb(255 255 255 / 7%);
+}
+
+.model-tree__branch summary > span,
+.model-tree__leaf > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-tree__branch summary > span {
+  flex: 1;
+}
+
+.model-tree__branch summary small {
+  color: var(--text-disabled);
+  font-size: 9px;
+}
+
+.model-tree__mesh-icon {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border: 1px solid #76d3ff;
+  transform: rotate(45deg);
+}
+
+.case-section-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 28px 0 15px;
+}
+
+.case-section-heading h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.case-section-heading .eyebrow {
+  margin-bottom: 4px;
+}
+
+.geometry-select {
+  width: 210px;
+}
+
+.case-geometry-empty {
+  display: grid;
+  min-height: 330px;
+  border: 1px dashed var(--border-strong);
+  background: var(--bg-secondary);
+  place-content: center;
+  text-align: center;
+}
+
+.case-geometry-empty > span {
+  color: var(--border-strong);
+  font-size: 52px;
+}
+
+.case-geometry-empty h3 {
+  margin: 6px 0;
+  font-size: 16px;
+}
+
+.case-geometry-empty p {
+  max-width: 400px;
+  color: var(--text-secondary);
+}
+
+.case-geometry-empty .button {
+  justify-self: center;
+}
+
 .workspace-heading {
   display: flex;
   align-items: flex-start;
@@ -627,5 +1134,34 @@ p {
 
   .workspace-content {
     width: calc(100% - 40px);
+  }
+
+  .workspace-heading,
+  .case-section-heading {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .workspace-heading__actions,
+  .case-geometry-actions {
+    flex-wrap: wrap;
+  }
+
+  .geometry-empty {
+    grid-template-columns: 1fr;
+    gap: 28px;
+    padding-top: 28px;
+  }
+
+  .geometry-empty__preview {
+    height: 240px;
+  }
+
+  .geometry-library {
+    grid-template-columns: 170px minmax(0, 1fr);
+  }
+
+  .geometry-select {
+    width: 100%;
   }
 }

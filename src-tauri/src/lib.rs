@@ -32,6 +32,9 @@ pub fn run() {
             commands::case::create_case,
             commands::case::list_cases,
             commands::case::get_case,
+            commands::geometry::import_geometry,
+            commands::geometry::get_geometry_data,
+            commands::geometry::assign_geometry,
         ])
         .run(tauri::generate_context!())
         .expect("failed to start TesRig");

@@ -5,8 +5,9 @@ use std::path::{Path, PathBuf};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
-const PROJECT_DIRECTORIES: [&str; 6] = [
+const PROJECT_DIRECTORIES: [&str; 7] = [
     "cases",
+    "geometries",
     "inputs",
     "generated",
     "results",

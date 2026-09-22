@@ -13,6 +13,8 @@ pub struct CreateCaseRequest {
     description: String,
     simulation_type: SimulationType,
     solver: Solver,
+    geometry_id: Option<Uuid>,
+    variant_of_case_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -43,6 +45,8 @@ pub fn create_case(
         &request.description,
         request.simulation_type,
         request.solver,
+        request.geometry_id,
+        request.variant_of_case_id,
     )
 }
 

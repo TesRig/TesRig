@@ -29,6 +29,10 @@ pub struct SimulationCase {
     pub simulation_type: SimulationType,
     pub solver: Solver,
     pub status: CaseStatus,
+    #[serde(default)]
+    pub geometry_id: Option<Uuid>,
+    #[serde(default)]
+    pub variant_of_case_id: Option<Uuid>,
 }
 
 impl SimulationCase {
@@ -37,6 +41,8 @@ impl SimulationCase {
         description: String,
         simulation_type: SimulationType,
         solver: Solver,
+        geometry_id: Option<Uuid>,
+        variant_of_case_id: Option<Uuid>,
     ) -> Self {
         let now = Utc::now();
         Self {
@@ -48,6 +54,8 @@ impl SimulationCase {
             simulation_type,
             solver,
             status: CaseStatus::Draft,
+            geometry_id,
+            variant_of_case_id,
         }
     }
 }

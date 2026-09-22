@@ -16,6 +16,7 @@ interface WorkspaceContextValue {
   setProject: (project: ProjectSummary | null) => void;
   selectCase: (caseId: string | null) => void;
   addCase: (simulationCase: SimulationCase) => void;
+  syncProject: (project: ProjectSummary) => void;
 }
 
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
@@ -26,7 +27,9 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
 
   const setProject = useCallback((nextProject: ProjectSummary | null) => {
     setProjectState(nextProject);
-    setActiveCaseId(nextProject?.cases[0]?.id ?? null);
+    // Opening or creating a project always returns to the project geometry
+    // workspace. Cases are selected explicitly from the navigator.
+    setActiveCaseId(null);
   }, []);
 
   const addCase = useCallback((simulationCase: SimulationCase) => {
@@ -42,10 +45,25 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
     setActiveCaseId(simulationCase.id);
   }, []);
 
+  const syncProject = useCallback((nextProject: ProjectSummary) => {
+    setProjectState(nextProject);
+    setActiveCaseId((current) =>
+      current && nextProject.cases.some(({ id }) => id === current) ? current : null,
+    );
+  }, []);
+
   const activeCase = project?.cases.find(({ id }) => id === activeCaseId) ?? null;
   const value = useMemo(
-    () => ({ project, activeCaseId, activeCase, setProject, selectCase: setActiveCaseId, addCase }),
-    [project, activeCaseId, activeCase, setProject, addCase],
+    () => ({
+      project,
+      activeCaseId,
+      activeCase,
+      setProject,
+      selectCase: setActiveCaseId,
+      addCase,
+      syncProject,
+    }),
+    [project, activeCaseId, activeCase, setProject, addCase, syncProject],
   );
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;
