@@ -215,6 +215,38 @@ impl ProjectService {
         Ok(summarize(workspace))
     }
 
+    pub fn remove_geometry(
+        &mut self,
+        project_id: Uuid,
+        geometry_id: Uuid,
+    ) -> AppResult<ProjectSummary> {
+        let workspace = self.workspaces.current_mut()?;
+        ensure_project(workspace, project_id)?;
+        let geometry = ensure_geometry(workspace, geometry_id)?.clone();
+
+        for simulation_case in &mut workspace.cases {
+            if simulation_case.geometry_id == Some(geometry_id) {
+                simulation_case.geometry_id = None;
+                simulation_case.updated_at = Utc::now();
+            }
+        }
+        workspace
+            .manifest
+            .geometries
+            .retain(|item| item.id != geometry_id);
+        workspace.manifest.updated_at = Utc::now();
+
+        let geometry_path = workspace
+            .root()
+            .join("geometries")
+            .join(geometry.stored_file_name());
+        if geometry_path.exists() {
+            fs::remove_file(geometry_path).map_err(AppError::io)?;
+        }
+        persist_workspace(workspace)?;
+        Ok(summarize(workspace))
+    }
+
     pub fn get_geometry_data(&self, project_id: Uuid, geometry_id: Uuid) -> AppResult<Vec<u8>> {
         let workspace = self.workspaces.current()?;
         ensure_project(workspace, project_id)?;
@@ -492,6 +524,44 @@ mod tests {
                 .expect("geometry bytes after reopening"),
             b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"
         );
+    }
+
+    #[test]
+    fn removes_geometry_and_unassigns_referencing_cases() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let archive_path = directory.path().join("geometry-removal.tsrig");
+        let source_path = directory.path().join("wing.obj");
+        fs::write(&source_path, b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n").expect("geometry fixture");
+
+        let mut service = ProjectService::new();
+        let project = service
+            .create_project("Geometry removal", "", &archive_path)
+            .expect("project creation");
+        let imported = service
+            .import_geometry(project.id, None, &source_path)
+            .expect("geometry import");
+        let geometry = imported.geometries[0].clone();
+        service
+            .create_case(
+                project.id,
+                "Baseline",
+                "",
+                SimulationType::Cfd,
+                Solver::OpenFOAM,
+                Some(geometry.id),
+                None,
+            )
+            .expect("case creation");
+
+        let updated = service
+            .remove_geometry(project.id, geometry.id)
+            .expect("geometry removal");
+        assert!(updated.geometries.is_empty());
+        assert_eq!(updated.cases[0].geometry_id, None);
+        assert!(matches!(
+            service.get_geometry_data(project.id, geometry.id),
+            Err(AppError::GeometryNotFound(_))
+        ));
     }
 
     #[test]

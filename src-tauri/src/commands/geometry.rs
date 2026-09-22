@@ -29,6 +29,13 @@ pub struct AssignGeometryRequest {
     geometry_id: Uuid,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveGeometryRequest {
+    project_id: Uuid,
+    geometry_id: Uuid,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GeometryData {
@@ -75,4 +82,16 @@ pub fn assign_geometry(
         .lock()
         .map_err(|_| AppError::InternalError("project service lock was poisoned".to_owned()))?;
     service.assign_geometry(request.project_id, request.case_id, request.geometry_id)
+}
+
+#[tauri::command]
+pub fn remove_geometry(
+    request: RemoveGeometryRequest,
+    state: State<'_, AppState>,
+) -> AppResult<ProjectSummary> {
+    let mut service = state
+        .project_service
+        .lock()
+        .map_err(|_| AppError::InternalError("project service lock was poisoned".to_owned()))?;
+    service.remove_geometry(request.project_id, request.geometry_id)
 }

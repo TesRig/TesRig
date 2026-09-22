@@ -28,6 +28,13 @@ export function assignGeometry(projectId: string, caseId: string, geometryId: st
   );
 }
 
+export function removeGeometry(projectId: string, geometryId: string) {
+  return invokeCommand<ProjectSummary, { projectId: string; geometryId: string }>(
+    "remove_geometry",
+    { projectId, geometryId },
+  );
+}
+
 export function getGeometryData(projectId: string, geometryId: string) {
   return invokeCommand<{ bytes: number[] }, { projectId: string; geometryId: string }>(
     "get_geometry_data",

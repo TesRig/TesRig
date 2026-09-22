@@ -172,15 +172,22 @@ export function GeometryViewer({
 
     const camera = new THREE.PerspectiveCamera(40, 1, 0.01, 100000);
     camera.up.set(0, upAxis === "Y" ? 1 : 0, upAxis === "Z" ? 1 : 0);
+    camera.position.set(8, upAxis === "Y" ? 6 : -8, upAxis === "Y" ? 8 : 6);
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.setClearColor(0x0d1012, 1);
+    // The view helper is rendered as a second pass. Automatic clearing would
+    // erase the model pass and leave only the axis widget visible.
+    renderer.autoClear = false;
     container.appendChild(renderer.domElement);
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.07;
     controls.screenSpacePanning = true;
+    controls.target.set(0, 0, 0);
+    controls.update();
 
     const viewHelper = new ViewHelper(camera, renderer.domElement);
     viewHelper.location.left = 14;
@@ -223,6 +230,12 @@ export function GeometryViewer({
     fillLight.position.set(-5, 2, -4);
     scene.add(fillLight);
 
+    // Keep a reference plane visible while the model is loading. Once the
+    // model bounds are known it is scaled to suit the imported geometry.
+    const groundGrid = new THREE.GridHelper(10, 24, 0x61707c, 0x27313a);
+    if (upAxis === "Z") groundGrid.rotation.x = Math.PI / 2;
+    scene.add(groundGrid);
+
     const clock = new THREE.Clock();
     let frame = 0;
     const render = () => {
@@ -238,6 +251,7 @@ export function GeometryViewer({
         clock.getDelta();
         controls.update();
       }
+      renderer.clear();
       renderer.render(scene, camera);
       viewHelper.render(renderer);
       frame = requestAnimationFrame(render);
@@ -294,8 +308,10 @@ export function GeometryViewer({
 
     const resize = () => {
       const { clientWidth, clientHeight } = container;
-      renderer.setSize(clientWidth, clientHeight, false);
-      camera.aspect = Math.max(clientWidth, 1) / Math.max(clientHeight, 1);
+      const width = Math.max(clientWidth, 1);
+      const height = Math.max(clientHeight, 1);
+      renderer.setSize(width, height, false);
+      camera.aspect = width / height;
       camera.updateProjectionMatrix();
       fitView();
     };
@@ -328,15 +344,13 @@ export function GeometryViewer({
         const size = bounds.getSize(new THREE.Vector3());
         const extent = Math.max(size.x, size.y, size.z, 1);
         const gridSize = Math.max(extent * 2.4, 10);
-        const grid = new THREE.GridHelper(gridSize, 24, 0x61707c, 0x27313a);
         const groundOffset = Math.max(extent * 0.002, 0.002);
+        groundGrid.scale.setScalar(gridSize / 10);
         if (upAxis === "Y") {
-          grid.position.y = -groundOffset;
+          groundGrid.position.y = -groundOffset;
         } else {
-          grid.rotation.x = Math.PI / 2;
-          grid.position.z = -groundOffset;
+          groundGrid.position.z = -groundOffset;
         }
-        scene.add(grid);
 
         model.updateMatrixWorld(true);
         const positionedBounds = new THREE.Box3().setFromObject(model);
@@ -344,6 +358,7 @@ export function GeometryViewer({
         if (!Number.isFinite(modelSphere.radius)) {
           throw new Error("The geometry dimensions are invalid and cannot be framed.");
         }
+        modelSphere.radius = Math.max(modelSphere.radius, extent * 0.01, 0.01);
         fitView();
         setMessage("");
       })
@@ -361,6 +376,11 @@ export function GeometryViewer({
       renderer.domElement.removeEventListener("pointermove", handleHelperPointerMove);
       fitViewRef.current = () => undefined;
       renderer.dispose();
+      groundGrid.geometry.dispose();
+      const gridMaterials = Array.isArray(groundGrid.material)
+        ? groundGrid.material
+        : [groundGrid.material];
+      gridMaterials.forEach((material) => material.dispose());
       scene.traverse((object) => {
         if (object instanceof THREE.Mesh) {
           object.geometry.dispose();

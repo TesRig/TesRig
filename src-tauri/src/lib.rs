@@ -35,6 +35,7 @@ pub fn run() {
             commands::geometry::import_geometry,
             commands::geometry::get_geometry_data,
             commands::geometry::assign_geometry,
+            commands::geometry::remove_geometry,
         ])
         .run(tauri::generate_context!())
         .expect("failed to start TesRig");
