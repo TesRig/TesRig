@@ -1,21 +1,29 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { ViewHelper } from "three/examples/jsm/helpers/ViewHelper.js";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 import { toUserMessage } from "../../../lib/errors/app-error";
-import type { GeometryAsset } from "../../projects/project.types";
+import type { BoundaryBox } from "../../cases/case.types";
+import type { GeometryAsset, UpAxis } from "../../projects/project.types";
 import { getGeometryData } from "../geometry.api";
+import { createStepModel } from "../step-geometry";
 
 interface GeometryViewerProps {
   projectId: string;
   geometry: GeometryAsset;
   geometries?: GeometryAsset[];
   onGeometryChange?: (geometryId: string) => void;
+  selectedSurface?: string | null;
+  onSurfaceSelect?: (surface: string) => void;
+  upAxis: UpAxis;
+  onUpAxisChange: (upAxis: UpAxis) => void;
+  boundaryBox?: BoundaryBox | null;
+  flowVelocity?: [number, number, number];
+  onBoundaryBoxChange?: (boundaryBox: BoundaryBox) => void;
+  children?: ReactNode;
 }
-
-type UpAxis = "Y" | "Z";
 
 interface ModelTreeNode {
   id: string;
@@ -33,6 +41,41 @@ const surfaceMaterial = new THREE.MeshStandardMaterial({
   side: THREE.DoubleSide,
 });
 
+const boundaryFaces = [
+  { id: "domain:xMin", axis: 0, side: "min" as const },
+  { id: "domain:xMax", axis: 0, side: "max" as const },
+  { id: "domain:yMin", axis: 1, side: "min" as const },
+  { id: "domain:yMax", axis: 1, side: "max" as const },
+  { id: "domain:zMin", axis: 2, side: "min" as const },
+  { id: "domain:zMax", axis: 2, side: "max" as const },
+];
+
+function createDefaultBoundaryBox(
+  bounds: THREE.Box3,
+  velocity: [number, number, number],
+): BoundaryBox {
+  const size = bounds.getSize(new THREE.Vector3());
+  const length = Math.max(size.x, size.y, size.z, 1e-6);
+  const flowAxis = velocity.reduce(
+    (largest, value, axis) => (Math.abs(value) > Math.abs(velocity[largest]) ? axis : largest),
+    0,
+  );
+  const min = bounds.min.toArray() as [number, number, number];
+  const max = bounds.max.toArray() as [number, number, number];
+
+  for (let axis = 0; axis < 3; axis += 1) {
+    if (axis === flowAxis) {
+      const positiveFlow = velocity[axis] >= 0;
+      min[axis] -= length * (positiveFlow ? 3 : 6);
+      max[axis] += length * (positiveFlow ? 6 : 3);
+    } else {
+      min[axis] -= length * 3;
+      max[axis] += length * 3;
+    }
+  }
+  return { min, max };
+}
+
 function brightenSourceColor(
   material: THREE.MeshStandardMaterial,
   source: [number, number, number],
@@ -46,47 +89,6 @@ function brightenSourceColor(
   material.emissive.copy(color).multiplyScalar(0.18);
 }
 
-async function createStepModel(bytes: Uint8Array) {
-  const [{ default: createOcctModule }, { default: wasmUrl }] = await Promise.all([
-    import("occt-import-js"),
-    import("occt-import-js/dist/occt-import-js.wasm?url"),
-  ]);
-  const occt = await createOcctModule({
-    locateFile: (path) => (path.endsWith(".wasm") ? wasmUrl : path),
-  });
-  const result = occt.ReadStepFile(bytes, {
-    linearUnit: "millimeter",
-    linearDeflectionType: "bounding_box_ratio",
-    linearDeflection: 0.001,
-    angularDeflection: 0.5,
-  });
-  if (!result.success) throw new Error("OpenCascade could not read this STEP file.");
-
-  const group = new THREE.Group();
-  for (const sourceMesh of result.meshes) {
-    const geometry = new THREE.BufferGeometry();
-    geometry.name = sourceMesh.name;
-    geometry.setAttribute(
-      "position",
-      new THREE.Float32BufferAttribute(sourceMesh.attributes.position.array, 3),
-    );
-    if (sourceMesh.attributes.normal) {
-      geometry.setAttribute(
-        "normal",
-        new THREE.Float32BufferAttribute(sourceMesh.attributes.normal.array, 3),
-      );
-    } else {
-      geometry.computeVertexNormals();
-    }
-    geometry.setIndex(sourceMesh.index.array);
-
-    const material = surfaceMaterial.clone();
-    if (sourceMesh.color) brightenSourceColor(material, sourceMesh.color);
-    group.add(new THREE.Mesh(geometry, material));
-  }
-  return group;
-}
-
 async function createModel(asset: GeometryAsset, bytes: Uint8Array) {
   if (asset.format === "STL") {
     const geometry = new STLLoader().parse(bytes.buffer as ArrayBuffer);
@@ -94,7 +96,13 @@ async function createModel(asset: GeometryAsset, bytes: Uint8Array) {
     return new THREE.Mesh(geometry, surfaceMaterial.clone());
   }
 
-  if (asset.format === "STEP") return createStepModel(bytes);
+  if (asset.format === "STEP") {
+    return createStepModel(bytes, (color) => {
+      const material = surfaceMaterial.clone();
+      if (color) brightenSourceColor(material, color);
+      return material;
+    });
+  }
 
   const object = new OBJLoader().parse(new TextDecoder().decode(bytes));
   object.traverse((child) => {
@@ -114,9 +122,12 @@ function createModelTree(model: THREE.Object3D, rootLabel: string): ModelTreeNod
     const isMesh = object instanceof THREE.Mesh;
     if (isMesh) meshIndex += 1;
     nodeIndex += 1;
+    const label =
+      object.name.trim() || (isRoot ? rootLabel : isMesh ? `Surface ${meshIndex}` : "Group");
+    if (isMesh) object.userData.tesrigSurface = label;
     return {
       id: `${object.uuid}-${nodeIndex}`,
-      label: object.name.trim() || (isRoot ? rootLabel : isMesh ? `Surface ${meshIndex}` : "Group"),
+      label,
       kind: isMesh ? "mesh" : "group",
       children: object.children.map((child) => visit(child)),
     };
@@ -125,13 +136,28 @@ function createModelTree(model: THREE.Object3D, rootLabel: string): ModelTreeNod
   return visit(model, true);
 }
 
-function ModelTreeBranch({ node, depth = 0 }: { node: ModelTreeNode; depth?: number }) {
+function ModelTreeBranch({
+  node,
+  depth = 0,
+  selectedSurface,
+  onSurfaceSelect,
+}: {
+  node: ModelTreeNode;
+  depth?: number;
+  selectedSurface?: string | null;
+  onSurfaceSelect?: (surface: string) => void;
+}) {
   if (node.children.length === 0) {
     return (
-      <div className="model-tree__leaf" style={{ paddingLeft: `${depth * 14 + 8}px` }}>
+      <button
+        type="button"
+        className={`model-tree__leaf ${selectedSurface === node.label ? "is-selected" : ""}`}
+        style={{ paddingLeft: `${depth * 14 + 8}px` }}
+        onClick={() => onSurfaceSelect?.(node.label)}
+      >
         <span className="model-tree__mesh-icon" />
         <span>{node.label}</span>
-      </div>
+      </button>
     );
   }
 
@@ -142,7 +168,13 @@ function ModelTreeBranch({ node, depth = 0 }: { node: ModelTreeNode; depth?: num
         <small>{node.children.length}</small>
       </summary>
       {node.children.map((child) => (
-        <ModelTreeBranch key={child.id} node={child} depth={depth + 1} />
+        <ModelTreeBranch
+          key={child.id}
+          node={child}
+          depth={depth + 1}
+          selectedSurface={selectedSurface}
+          onSurfaceSelect={onSurfaceSelect}
+        />
       ))}
     </details>
   );
@@ -153,12 +185,33 @@ export function GeometryViewer({
   geometry,
   geometries,
   onGeometryChange,
+  selectedSurface,
+  onSurfaceSelect,
+  upAxis,
+  onUpAxisChange,
+  boundaryBox,
+  flowVelocity = [1, 0, 0],
+  onBoundaryBoxChange,
+  children,
 }: GeometryViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const fitViewRef = useRef<() => void>(() => undefined);
+  const selectSurfaceRef = useRef<(surface: string | null) => void>(() => undefined);
+  const updateBoundaryBoxRef = useRef<(box: BoundaryBox | null) => void>(() => undefined);
+  const createBoundaryBoxRef = useRef<() => void>(() => undefined);
+  const selectedSurfaceValueRef = useRef(selectedSurface);
+  selectedSurfaceValueRef.current = selectedSurface;
+  const boundaryBoxValueRef = useRef(boundaryBox);
+  boundaryBoxValueRef.current = boundaryBox;
+  const flowVelocityRef = useRef(flowVelocity);
+  flowVelocityRef.current = flowVelocity;
+  const onBoundaryBoxChangeRef = useRef(onBoundaryBoxChange);
+  onBoundaryBoxChangeRef.current = onBoundaryBoxChange;
   const [message, setMessage] = useState("Loading geometry…");
   const [modelTree, setModelTree] = useState<ModelTreeNode | null>(null);
-  const [upAxis, setUpAxis] = useState<UpAxis>("Y");
+  const [editingBoundaryBox, setEditingBoundaryBox] = useState(false);
+  const editingBoundaryBoxRef = useRef(editingBoundaryBox);
+  editingBoundaryBoxRef.current = editingBoundaryBox;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -182,6 +235,185 @@ export function GeometryViewer({
     renderer.autoClear = false;
     container.appendChild(renderer.domElement);
 
+    const raycaster = new THREE.Raycaster();
+    const pointer = new THREE.Vector2();
+    let pointerStart: { x: number; y: number } | null = null;
+    let rawModelBounds: THREE.Box3 | null = null;
+    const modelOffset = new THREE.Vector3();
+    let geometrySphere: THREE.Sphere | null = null;
+    let domainSphere: THREE.Sphere | null = null;
+    const boundaryGroup = new THREE.Group();
+    boundaryGroup.visible = false;
+    scene.add(boundaryGroup);
+    const boundaryWire = new THREE.LineSegments(
+      new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)),
+      new THREE.LineBasicMaterial({ color: 0x72cfff, transparent: true, opacity: 0.78 }),
+    );
+    boundaryWire.renderOrder = 3;
+    boundaryGroup.add(boundaryWire);
+    const boundaryFaceMeshes = boundaryFaces.map((face) => {
+      const mesh = new THREE.Mesh(
+        new THREE.PlaneGeometry(1, 1),
+        new THREE.MeshBasicMaterial({
+          color: 0x72cfff,
+          side: THREE.DoubleSide,
+          transparent: true,
+          opacity: 0.08,
+          depthWrite: false,
+        }),
+      );
+      mesh.userData.tesrigBoundaryFace = face.id;
+      mesh.userData.tesrigBoundaryAxis = face.axis;
+      mesh.userData.tesrigBoundarySide = face.side;
+      mesh.renderOrder = 2;
+      boundaryGroup.add(mesh);
+      return mesh;
+    });
+    const applySurfaceSelection = (surface: string | null) => {
+      scene.traverse((object) => {
+        if (!(object instanceof THREE.Mesh)) return;
+        const materials = Array.isArray(object.material) ? object.material : [object.material];
+        materials.forEach((material) => {
+          if (material instanceof THREE.MeshStandardMaterial) {
+            material.emissiveIntensity = object.userData.tesrigSurface === surface ? 1.65 : 0.75;
+          } else if (material instanceof THREE.MeshBasicMaterial) {
+            material.opacity = object.userData.tesrigBoundaryFace === surface ? 0.26 : 0.08;
+          }
+        });
+      });
+    };
+    selectSurfaceRef.current = applySurfaceSelection;
+    let updateBoundaryBoxVisual: (box: BoundaryBox | null) => void = () => undefined;
+    let faceDrag:
+      | {
+          pointerId: number;
+          axis: number;
+          side: "min" | "max";
+          plane: THREE.Plane;
+          startPoint: THREE.Vector3;
+          startCoordinate: number;
+        }
+      | undefined;
+    const setPointerFromEvent = (event: PointerEvent) => {
+      const rect = renderer.domElement.getBoundingClientRect();
+      pointer.set(
+        ((event.clientX - rect.left) / rect.width) * 2 - 1,
+        -((event.clientY - rect.top) / rect.height) * 2 + 1,
+      );
+      raycaster.setFromCamera(pointer, camera);
+    };
+    const handleModelPointerDown = (event: PointerEvent) => {
+      if (editingBoundaryBoxRef.current && boundaryBoxValueRef.current) {
+        setPointerFromEvent(event);
+        const hit = raycaster.intersectObjects(boundaryFaceMeshes, false)[0];
+        if (hit) {
+          const axis = hit.object.userData.tesrigBoundaryAxis as number;
+          const side = hit.object.userData.tesrigBoundarySide as "min" | "max";
+          const axisVector = new THREE.Vector3().setComponent(axis, 1);
+          const cameraDirection = camera.getWorldDirection(new THREE.Vector3());
+          const planeNormal = cameraDirection.addScaledVector(
+            axisVector,
+            -cameraDirection.dot(axisVector),
+          );
+          if (planeNormal.lengthSq() < 1e-8) {
+            planeNormal.set(axis === 0 ? 0 : 1, axis === 0 ? 1 : 0, 0);
+          }
+          planeNormal.normalize();
+          const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(planeNormal, hit.point);
+          const startPoint = raycaster.ray.intersectPlane(plane, new THREE.Vector3());
+          if (startPoint) {
+            const box = boundaryBoxValueRef.current;
+            faceDrag = {
+              pointerId: event.pointerId,
+              axis,
+              side,
+              plane,
+              startPoint,
+              startCoordinate: box[side][axis],
+            };
+            pointerStart = null;
+            controls.enabled = false;
+            renderer.domElement.setPointerCapture(event.pointerId);
+            onSurfaceSelect?.(hit.object.userData.tesrigBoundaryFace as string);
+            renderer.domElement.style.cursor = "grabbing";
+            event.preventDefault();
+            return;
+          }
+        }
+      }
+      pointerStart = { x: event.clientX, y: event.clientY };
+    };
+    const handleModelPointerMove = (event: PointerEvent) => {
+      if (!faceDrag || faceDrag.pointerId !== event.pointerId) return;
+      const box = boundaryBoxValueRef.current;
+      if (!box) return;
+      setPointerFromEvent(event);
+      const point = raycaster.ray.intersectPlane(faceDrag.plane, new THREE.Vector3());
+      if (!point) return;
+      const axisVector = new THREE.Vector3().setComponent(faceDrag.axis, 1);
+      let coordinate =
+        faceDrag.startCoordinate + point.clone().sub(faceDrag.startPoint).dot(axisVector);
+      const spans = [0, 1, 2].map((axis) => box.max[axis] - box.min[axis]);
+      const characteristic = Math.max(
+        ...spans,
+        rawModelBounds?.getSize(new THREE.Vector3()).length() ?? 0,
+        1e-6,
+      );
+      const snapDistance = characteristic * 0.0125;
+      if (Math.abs(coordinate) <= snapDistance) coordinate = 0;
+      const minimumSpan = characteristic * 0.001;
+      coordinate =
+        faceDrag.side === "min"
+          ? Math.min(coordinate, box.max[faceDrag.axis] - minimumSpan)
+          : Math.max(coordinate, box.min[faceDrag.axis] + minimumSpan);
+      const next: BoundaryBox = {
+        min: [...box.min] as [number, number, number],
+        max: [...box.max] as [number, number, number],
+      };
+      next[faceDrag.side][faceDrag.axis] = coordinate;
+      boundaryBoxValueRef.current = next;
+      updateBoundaryBoxVisual(next);
+      onBoundaryBoxChangeRef.current?.(next);
+      event.preventDefault();
+    };
+    const handleModelPointerUp = (event: PointerEvent) => {
+      if (faceDrag?.pointerId === event.pointerId) {
+        faceDrag = undefined;
+        controls.enabled = true;
+        renderer.domElement.style.cursor = "grab";
+        if (renderer.domElement.hasPointerCapture(event.pointerId)) {
+          renderer.domElement.releasePointerCapture(event.pointerId);
+        }
+        event.preventDefault();
+        return;
+      }
+      if (
+        !pointerStart ||
+        Math.hypot(event.clientX - pointerStart.x, event.clientY - pointerStart.y) > 4
+      ) {
+        pointerStart = null;
+        return;
+      }
+      pointerStart = null;
+      setPointerFromEvent(event);
+      const hit = raycaster
+        .intersectObjects(scene.children, true)
+        .find(({ object }) => typeof object.userData.tesrigSurface === "string");
+      if (hit) onSurfaceSelect?.(hit.object.userData.tesrigSurface as string);
+    };
+    const handleModelPointerCancel = (event: PointerEvent) => {
+      if (faceDrag?.pointerId !== event.pointerId) return;
+      faceDrag = undefined;
+      controls.enabled = true;
+      if (renderer.domElement.hasPointerCapture(event.pointerId)) {
+        renderer.domElement.releasePointerCapture(event.pointerId);
+      }
+    };
+    renderer.domElement.addEventListener("pointerdown", handleModelPointerDown);
+    renderer.domElement.addEventListener("pointermove", handleModelPointerMove);
+    renderer.domElement.addEventListener("pointerup", handleModelPointerUp);
+    renderer.domElement.addEventListener("pointercancel", handleModelPointerCancel);
+
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.07;
@@ -196,30 +428,78 @@ export function GeometryViewer({
     viewHelper.setLabels("X", "Y", "Z");
     viewHelper.setLabelStyle("700 20px sans-serif", "#071015", 15);
 
-    let modelSphere: THREE.Sphere | null = null;
     const fitView = () => {
-      if (!modelSphere || modelSphere.radius <= 0) return;
+      const fitSphere = domainSphere ?? geometrySphere;
+      if (!fitSphere || fitSphere.radius <= 0) return;
 
       const verticalFov = THREE.MathUtils.degToRad(camera.fov);
       const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * camera.aspect);
       const limitingFov = Math.min(verticalFov, horizontalFov);
-      const distance = (modelSphere.radius / Math.sin(limitingFov / 2)) * 1.18;
+      const distance = (fitSphere.radius / Math.sin(limitingFov / 2)) * 1.18;
       const viewDirection =
         upAxis === "Y"
           ? new THREE.Vector3(1, 0.72, 1).normalize()
           : new THREE.Vector3(1, -1, 0.72).normalize();
 
-      controls.target.copy(modelSphere.center);
-      viewHelper.center.copy(modelSphere.center);
-      camera.position.copy(modelSphere.center).addScaledVector(viewDirection, distance);
-      camera.near = Math.max(modelSphere.radius / 1000, 0.001);
-      camera.far = Math.max(distance + modelSphere.radius * 20, 100);
-      controls.minDistance = modelSphere.radius * 0.05;
-      controls.maxDistance = modelSphere.radius * 30;
+      controls.target.copy(fitSphere.center);
+      viewHelper.center.copy(fitSphere.center);
+      camera.position.copy(fitSphere.center).addScaledVector(viewDirection, distance);
+      camera.near = Math.max(fitSphere.radius / 1000, 0.001);
+      camera.far = Math.max(distance + fitSphere.radius * 20, 100);
+      controls.minDistance = fitSphere.radius * 0.05;
+      controls.maxDistance = fitSphere.radius * 30;
       camera.updateProjectionMatrix();
       controls.update();
     };
     fitViewRef.current = fitView;
+
+    updateBoundaryBoxVisual = (box) => {
+      if (!box || !rawModelBounds) {
+        boundaryGroup.visible = false;
+        domainSphere = null;
+        return;
+      }
+      const displayMin = new THREE.Vector3(...box.min).add(modelOffset);
+      const displayMax = new THREE.Vector3(...box.max).add(modelOffset);
+      const displayBounds = new THREE.Box3(displayMin, displayMax);
+      const size = displayBounds.getSize(new THREE.Vector3());
+      const center = displayBounds.getCenter(new THREE.Vector3());
+      boundaryGroup.visible = true;
+      boundaryWire.position.copy(center);
+      boundaryWire.scale.copy(size);
+      boundaryFaceMeshes.forEach((mesh, index) => {
+        const face = boundaryFaces[index];
+        mesh.position.copy(center);
+        mesh.position.setComponent(
+          face.axis,
+          face.side === "min"
+            ? displayMin.getComponent(face.axis)
+            : displayMax.getComponent(face.axis),
+        );
+        mesh.rotation.set(0, 0, 0);
+        if (face.axis === 0) {
+          mesh.rotation.y = Math.PI / 2;
+          mesh.scale.set(size.z, size.y, 1);
+        } else if (face.axis === 1) {
+          mesh.rotation.x = Math.PI / 2;
+          mesh.scale.set(size.x, size.z, 1);
+        } else {
+          mesh.scale.set(size.x, size.y, 1);
+        }
+      });
+      domainSphere = displayBounds.getBoundingSphere(new THREE.Sphere());
+      applySurfaceSelection(selectedSurfaceValueRef.current ?? null);
+    };
+    updateBoundaryBoxRef.current = updateBoundaryBoxVisual;
+    createBoundaryBoxRef.current = () => {
+      if (!rawModelBounds) return;
+      const next = createDefaultBoundaryBox(rawModelBounds, flowVelocityRef.current);
+      boundaryBoxValueRef.current = next;
+      updateBoundaryBoxVisual(next);
+      onBoundaryBoxChangeRef.current?.(next);
+      setEditingBoundaryBox(true);
+      fitView();
+    };
 
     scene.add(new THREE.AmbientLight(0xffffff, 1.15));
     scene.add(new THREE.HemisphereLight(0xe8f5ff, 0x53606a, 3.2));
@@ -299,7 +579,16 @@ export function GeometryViewer({
       }
     };
     const handleHelperPointerMove = (event: PointerEvent) => {
-      renderer.domElement.style.cursor = isInsideViewHelper(event) ? "pointer" : "";
+      if (isInsideViewHelper(event)) {
+        renderer.domElement.style.cursor = "pointer";
+      } else if (!faceDrag && editingBoundaryBoxRef.current) {
+        setPointerFromEvent(event);
+        renderer.domElement.style.cursor = raycaster.intersectObjects(boundaryFaceMeshes, false)[0]
+          ? "grab"
+          : "";
+      } else if (!faceDrag) {
+        renderer.domElement.style.cursor = "";
+      }
     };
     renderer.domElement.addEventListener("pointerdown", handleHelperPointerDown, true);
     renderer.domElement.addEventListener("pointerup", handleHelperPointerUp, true);
@@ -331,6 +620,7 @@ export function GeometryViewer({
         if (disposed || !model) return;
         const bounds = new THREE.Box3().setFromObject(model);
         if (bounds.isEmpty()) throw new Error("The geometry file contains no visible surfaces.");
+        rawModelBounds = bounds.clone();
 
         const center = bounds.getCenter(new THREE.Vector3());
         if (upAxis === "Y") {
@@ -338,8 +628,10 @@ export function GeometryViewer({
         } else {
           model.position.set(-center.x, -center.y, -bounds.min.z);
         }
+        modelOffset.copy(model.position);
         scene.add(model);
         setModelTree(createModelTree(model, geometry.name));
+        applySurfaceSelection(selectedSurfaceValueRef.current ?? null);
 
         const size = bounds.getSize(new THREE.Vector3());
         const extent = Math.max(size.x, size.y, size.z, 1);
@@ -352,13 +644,21 @@ export function GeometryViewer({
           groundGrid.position.z = -groundOffset;
         }
 
+        if (onBoundaryBoxChangeRef.current) {
+          const originMarker = new THREE.AxesHelper(Math.max(extent * 0.18, 0.1));
+          originMarker.position.copy(modelOffset);
+          originMarker.renderOrder = 4;
+          scene.add(originMarker);
+        }
+
         model.updateMatrixWorld(true);
         const positionedBounds = new THREE.Box3().setFromObject(model);
-        modelSphere = positionedBounds.getBoundingSphere(new THREE.Sphere());
-        if (!Number.isFinite(modelSphere.radius)) {
+        geometrySphere = positionedBounds.getBoundingSphere(new THREE.Sphere());
+        if (!Number.isFinite(geometrySphere.radius)) {
           throw new Error("The geometry dimensions are invalid and cannot be framed.");
         }
-        modelSphere.radius = Math.max(modelSphere.radius, extent * 0.01, 0.01);
+        geometrySphere.radius = Math.max(geometrySphere.radius, extent * 0.01, 0.01);
+        updateBoundaryBoxVisual(boundaryBoxValueRef.current ?? null);
         fitView();
         setMessage("");
       })
@@ -374,7 +674,14 @@ export function GeometryViewer({
       renderer.domElement.removeEventListener("pointerup", handleHelperPointerUp, true);
       renderer.domElement.removeEventListener("pointercancel", handleHelperPointerCancel, true);
       renderer.domElement.removeEventListener("pointermove", handleHelperPointerMove);
+      renderer.domElement.removeEventListener("pointerdown", handleModelPointerDown);
+      renderer.domElement.removeEventListener("pointermove", handleModelPointerMove);
+      renderer.domElement.removeEventListener("pointerup", handleModelPointerUp);
+      renderer.domElement.removeEventListener("pointercancel", handleModelPointerCancel);
       fitViewRef.current = () => undefined;
+      selectSurfaceRef.current = () => undefined;
+      updateBoundaryBoxRef.current = () => undefined;
+      createBoundaryBoxRef.current = () => undefined;
       renderer.dispose();
       groundGrid.geometry.dispose();
       const gridMaterials = Array.isArray(groundGrid.material)
@@ -386,17 +693,25 @@ export function GeometryViewer({
           object.geometry.dispose();
           const materials = Array.isArray(object.material) ? object.material : [object.material];
           materials.forEach((material) => material.dispose());
+        } else if (object instanceof THREE.LineSegments) {
+          object.geometry.dispose();
+          const materials = Array.isArray(object.material) ? object.material : [object.material];
+          materials.forEach((material) => material.dispose());
         }
       });
       container.removeChild(renderer.domElement);
     };
-  }, [geometry, projectId, upAxis]);
+  }, [geometry, onSurfaceSelect, projectId, upAxis]);
+
+  useEffect(() => selectSurfaceRef.current(selectedSurface ?? null), [selectedSurface]);
+  useEffect(() => {
+    updateBoundaryBoxRef.current(boundaryBox ?? null);
+    if (!boundaryBox) setEditingBoundaryBox(false);
+  }, [boundaryBox]);
 
   function selectUpAxis(nextAxis: UpAxis) {
     if (nextAxis === upAxis) return;
-    setMessage(`Switching to ${nextAxis}-up…`);
-    setModelTree(null);
-    setUpAxis(nextAxis);
+    onUpAxisChange(nextAxis);
   }
 
   return (
@@ -427,12 +742,39 @@ export function GeometryViewer({
           </div>
         )}
         <div className="model-tree__content">
-          {modelTree ? <ModelTreeBranch node={modelTree} /> : <span>Reading structure…</span>}
+          {modelTree ? (
+            <ModelTreeBranch
+              node={modelTree}
+              selectedSurface={selectedSurface}
+              onSurfaceSelect={onSurfaceSelect}
+            />
+          ) : (
+            <span>Reading structure…</span>
+          )}
         </div>
       </aside>
       {message && <div className="geometry-viewer__message">{message}</div>}
       {!message && (
         <div className="geometry-viewer__toolbar">
+          {onBoundaryBoxChange && (
+            <button
+              className={`geometry-viewer__fit boundary-box-toggle ${editingBoundaryBox ? "is-active" : ""}`}
+              type="button"
+              onClick={() => {
+                if (boundaryBox) {
+                  setEditingBoundaryBox((editing) => !editing);
+                } else {
+                  createBoundaryBoxRef.current();
+                }
+              }}
+            >
+              {boundaryBox
+                ? editingBoundaryBox
+                  ? "Finish box"
+                  : "Edit boundary box"
+                : "Create boundary box"}
+            </button>
+          )}
           <div className="up-axis-control" aria-label="Up axis">
             <span>Up</span>
             <button
@@ -460,8 +802,11 @@ export function GeometryViewer({
         </div>
       )}
       <div className="geometry-viewer__hint">
-        Orbit · left drag &nbsp; Pan · right drag &nbsp; Zoom · wheel &nbsp; Axes · click to snap
+        {editingBoundaryBox
+          ? "Drag a translucent face to resize · faces snap to the origin"
+          : "Orbit · left drag   Pan · right drag   Zoom · wheel   Axes · click to snap"}
       </div>
+      {children}
     </div>
   );
 }

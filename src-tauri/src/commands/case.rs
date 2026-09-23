@@ -1,5 +1,7 @@
-use crate::domain::case::{SimulationCase, SimulationType, Solver};
+use crate::domain::case::{CfdSetup, SimulationCase, SimulationType, Solver};
+use crate::domain::project::ProjectSummary;
 use crate::error::{AppError, AppResult};
+use crate::solver::openfoam::CaseValidation;
 use crate::AppState;
 use serde::Deserialize;
 use tauri::State;
@@ -30,11 +32,28 @@ pub struct GetCaseRequest {
     case_id: Uuid,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateCaseSetupRequest {
+    project_id: Uuid,
+    case_id: Uuid,
+    setup: CfdSetup,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportCaseRequest {
+    project_id: Uuid,
+    case_id: Uuid,
+    destination: String,
+}
+
 #[tauri::command]
 pub fn create_case(
     request: CreateCaseRequest,
     state: State<'_, AppState>,
 ) -> AppResult<SimulationCase> {
+    state.ensure_simulation_idle()?;
     let mut service = state
         .project_service
         .lock()
@@ -69,4 +88,47 @@ pub fn get_case(request: GetCaseRequest, state: State<'_, AppState>) -> AppResul
         .lock()
         .map_err(|_| AppError::InternalError("project service lock was poisoned".to_owned()))?;
     service.get_case(request.project_id, request.case_id)
+}
+
+#[tauri::command]
+pub fn update_case_setup(
+    request: UpdateCaseSetupRequest,
+    state: State<'_, AppState>,
+) -> AppResult<ProjectSummary> {
+    state.ensure_simulation_idle()?;
+    let mut service = state
+        .project_service
+        .lock()
+        .map_err(|_| AppError::InternalError("project service lock was poisoned".to_owned()))?;
+    service.update_case_setup(request.project_id, request.case_id, request.setup)
+}
+
+#[tauri::command]
+pub fn validate_case(
+    request: GetCaseRequest,
+    state: State<'_, AppState>,
+) -> AppResult<CaseValidation> {
+    state.ensure_simulation_idle()?;
+    let service = state
+        .project_service
+        .lock()
+        .map_err(|_| AppError::InternalError("project service lock was poisoned".to_owned()))?;
+    service.validate_case(request.project_id, request.case_id)
+}
+
+#[tauri::command]
+pub fn export_openfoam_case(
+    request: ExportCaseRequest,
+    state: State<'_, AppState>,
+) -> AppResult<String> {
+    state.ensure_simulation_idle()?;
+    let mut service = state
+        .project_service
+        .lock()
+        .map_err(|_| AppError::InternalError("project service lock was poisoned".to_owned()))?;
+    service.export_openfoam_case(
+        request.project_id,
+        request.case_id,
+        std::path::Path::new(&request.destination),
+    )
 }

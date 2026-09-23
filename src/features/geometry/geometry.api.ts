@@ -41,3 +41,21 @@ export function getGeometryData(projectId: string, geometryId: string) {
     { projectId, geometryId },
   );
 }
+
+export function hasGeometryTriangulation(projectId: string, geometryId: string) {
+  return invokeCommand<boolean, { projectId: string; geometryId: string }>(
+    "has_geometry_triangulation",
+    { projectId, geometryId },
+  );
+}
+
+export function saveGeometryTriangulation(
+  projectId: string,
+  geometryId: string,
+  bytes: Uint8Array,
+) {
+  return invokeCommand<void, { projectId: string; geometryId: string; bytes: number[] }>(
+    "save_geometry_triangulation",
+    { projectId, geometryId, bytes: Array.from(bytes) },
+  );
+}

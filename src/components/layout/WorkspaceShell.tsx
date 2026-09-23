@@ -1,18 +1,26 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import appIconUrl from "../../../src-tauri/icons/app-icon.svg";
 import { NewCaseDialog } from "../../features/cases/components/NewCaseDialog";
 import { CaseWorkspace } from "../../features/cases/components/CaseWorkspace";
+import { getSimulationLog } from "../../features/cases/case.api";
+import type { SimulationJob, SimulationLog } from "../../features/cases/case.types";
 import {
   chooseGeometryFile,
   importGeometry,
   removeGeometry,
 } from "../../features/geometry/geometry.api";
 import { ProjectOverview } from "../../features/projects/components/ProjectOverview";
-import { closeProject, saveProject } from "../../features/projects/project.api";
+import {
+  closeProject,
+  saveProject,
+  updateProjectSettings,
+} from "../../features/projects/project.api";
+import type { UpAxis } from "../../features/projects/project.types";
 import { toUserMessage } from "../../lib/errors/app-error";
 import { useWorkspace } from "../../stores/workspace.store";
 import { Button } from "../common/Button";
 import { StatusBar } from "../common/StatusBar";
+import { Modal } from "../dialogs/Modal";
 
 export function WorkspaceShell() {
   const { project, activeCaseId, activeCase, selectCase, setProject, syncProject } = useWorkspace();
@@ -26,6 +34,14 @@ export function WorkspaceShell() {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("Project ready");
   const [statusError, setStatusError] = useState(false);
+  const [errorDialog, setErrorDialog] = useState<string | null>(null);
+  const [simulationJob, setSimulationJob] = useState<SimulationJob | null>(null);
+  const [showSimulationLog, setShowSimulationLog] = useState(false);
+  const [simulationLog, setSimulationLog] = useState<SimulationLog | null>(null);
+
+  const reportSimulation = useCallback((job: SimulationJob | null) => {
+    setSimulationJob(job);
+  }, []);
 
   useEffect(() => {
     if (!project) return;
@@ -34,15 +50,39 @@ export function WorkspaceShell() {
     }
   }, [project, selectedGeometryId]);
 
+  useEffect(() => {
+    if (!showSimulationLog || !simulationJob) return;
+    let disposed = false;
+    const refresh = () => {
+      void getSimulationLog()
+        .then((log) => {
+          if (!disposed) setSimulationLog(log);
+        })
+        .catch((error) => {
+          if (!disposed) setSimulationLog({ stdout: "", stderr: toUserMessage(error) });
+        });
+    };
+    refresh();
+    const active = ["Starting", "Running", "Cancelling"].includes(simulationJob.status);
+    const interval = active ? window.setInterval(refresh, 1000) : undefined;
+    return () => {
+      disposed = true;
+      if (interval !== undefined) window.clearInterval(interval);
+    };
+  }, [showSimulationLog, simulationJob]);
+
   if (!project) return null;
   const projectId = project.id;
+  const projectSettings = project.settings;
   const selectedGeometry =
     project.geometries.find(({ id }) => id === selectedGeometryId) ?? project.geometries[0];
   const currentViewName = activeCase ? `Case / ${activeCase.name}` : "Geometry";
 
   function reportStatus(message: string, isError = false) {
-    setStatus(message);
+    const displayMessage = message.replace(/&#x20;|&#32;/gi, " ").trim();
+    setStatus(isError ? (displayMessage.split(/\r?\n/, 1)[0] ?? displayMessage) : displayMessage);
     setStatusError(isError);
+    if (isError) setErrorDialog(displayMessage);
   }
 
   function openGeometry(geometryId?: string) {
@@ -66,6 +106,21 @@ export function WorkspaceShell() {
       reportStatus(toUserMessage(error), true);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function handleUpAxisChange(upAxis: UpAxis) {
+    reportStatus(`Setting ${upAxis} as the project up axis…`);
+    try {
+      syncProject(
+        await updateProjectSettings({
+          projectId,
+          settings: { ...projectSettings, upAxis },
+        }),
+      );
+      reportStatus(`${upAxis}-up saved in project settings.`);
+    } catch (error) {
+      reportStatus(toUserMessage(error), true);
     }
   }
 
@@ -322,7 +377,9 @@ export function WorkspaceShell() {
             <CaseWorkspace
               simulationCase={activeCase}
               onStatus={reportStatus}
+              onSimulationChange={reportSimulation}
               onCreateVariant={(caseId) => startNewCase(caseId)}
+              onUpAxisChange={handleUpAxisChange}
             />
           ) : (
             <ProjectOverview
@@ -330,13 +387,59 @@ export function WorkspaceShell() {
               selectedGeometryId={selectedGeometry?.id ?? null}
               onGeometryChange={setSelectedGeometryId}
               onAddGeometry={handleAddGeometry}
+              onUpAxisChange={handleUpAxisChange}
               busy={busy}
             />
           )}
         </main>
       </div>
 
-      <StatusBar message={status} tone={statusError ? "error" : "neutral"} />
+      <StatusBar
+        message={status}
+        tone={statusError ? "error" : "neutral"}
+        simulation={simulationJob}
+        onViewLogs={() => setShowSimulationLog(true)}
+      />
+      {showSimulationLog && (
+        <Modal title="OpenFOAM logs" onClose={() => setShowSimulationLog(false)}>
+          <div className="modal__body simulation-log-viewer">
+            <div className="simulation-log-viewer__heading">
+              <strong>{simulationJob?.stage ?? "Simulation"}</strong>
+              <span>{Math.round(simulationJob?.progress ?? 0)}%</span>
+            </div>
+            <pre>{simulationLog?.stdout || "Waiting for OpenFOAM output…"}</pre>
+            {simulationLog?.stderr && (
+              <>
+                <strong className="simulation-log-viewer__stderr-title">Errors and warnings</strong>
+                <pre className="simulation-log-viewer__stderr">{simulationLog.stderr}</pre>
+              </>
+            )}
+          </div>
+          <footer className="modal__actions">
+            <Button variant="primary" onClick={() => setShowSimulationLog(false)}>
+              Close
+            </Button>
+          </footer>
+        </Modal>
+      )}
+      {errorDialog && (
+        <Modal title="TesRig couldn’t complete that action" onClose={() => setErrorDialog(null)}>
+          <div className="modal__body error-dialog__body">
+            <span className="error-dialog__icon" aria-hidden="true">
+              !
+            </span>
+            <div>
+              <strong>What went wrong</strong>
+              <p>{errorDialog}</p>
+            </div>
+          </div>
+          <footer className="modal__actions">
+            <Button variant="primary" onClick={() => setErrorDialog(null)} autoFocus>
+              OK
+            </Button>
+          </footer>
+        </Modal>
+      )}
       {showNewCase && (
         <NewCaseDialog
           variantOfCaseId={variantOfCaseId}

@@ -29,6 +29,7 @@
     "active": true,
     "targets": "all",
     "category": "DeveloperTool",
-    "shortDescription": "Engineering simulation workspace"
+    "shortDescription": "Engineering simulation workspace",
+    "resources": ["resources/openfoam/**/*"]
   }
 }

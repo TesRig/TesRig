@@ -1,6 +1,11 @@
 import type { SimulationCase } from "../cases/case.types";
 
 export type GeometryFormat = "STL" | "OBJ" | "STEP";
+export type UpAxis = "Y" | "Z";
+
+export interface ProjectSettings {
+  upAxis: UpAxis;
+}
 
 export interface GeometryAsset {
   id: string;
@@ -21,6 +26,7 @@ export interface ProjectSummary {
   archivePath: string;
   cases: SimulationCase[];
   geometries: GeometryAsset[];
+  settings: ProjectSettings;
 }
 
 export interface CreateProjectInput {
@@ -35,4 +41,8 @@ export interface OpenProjectInput {
 
 export interface ProjectIdInput {
   projectId: string;
+}
+
+export interface UpdateProjectSettingsInput extends ProjectIdInput {
+  settings: ProjectSettings;
 }

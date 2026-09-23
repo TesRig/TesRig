@@ -4,26 +4,29 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GeometryFormat {
-    STL,
-    OBJ,
-    STEP,
+    #[serde(rename = "STL")]
+    Stl,
+    #[serde(rename = "OBJ")]
+    Obj,
+    #[serde(rename = "STEP")]
+    Step,
 }
 
 impl GeometryFormat {
     pub fn from_extension(extension: &str) -> Option<Self> {
         match extension.to_ascii_lowercase().as_str() {
-            "stl" => Some(Self::STL),
-            "obj" => Some(Self::OBJ),
-            "step" | "stp" => Some(Self::STEP),
+            "stl" => Some(Self::Stl),
+            "obj" => Some(Self::Obj),
+            "step" | "stp" => Some(Self::Step),
             _ => None,
         }
     }
 
     pub fn extension(self) -> &'static str {
         match self {
-            Self::STL => "stl",
-            Self::OBJ => "obj",
-            Self::STEP => "step",
+            Self::Stl => "stl",
+            Self::Obj => "obj",
+            Self::Step => "step",
         }
     }
 }
@@ -54,6 +57,10 @@ impl GeometryAsset {
     pub fn stored_file_name(&self) -> String {
         format!("{}.{}", self.id, self.format.extension())
     }
+
+    pub fn triangulated_file_name(&self) -> String {
+        format!("{}.triangulated.stl", self.id)
+    }
 }
 
 #[cfg(test)]
@@ -64,12 +71,12 @@ mod tests {
     fn recognizes_both_step_extensions() {
         assert_eq!(
             GeometryFormat::from_extension("step"),
-            Some(GeometryFormat::STEP)
+            Some(GeometryFormat::Step)
         );
         assert_eq!(
             GeometryFormat::from_extension("STP"),
-            Some(GeometryFormat::STEP)
+            Some(GeometryFormat::Step)
         );
-        assert_eq!(GeometryFormat::STEP.extension(), "step");
+        assert_eq!(GeometryFormat::Step.extension(), "step");
     }
 }

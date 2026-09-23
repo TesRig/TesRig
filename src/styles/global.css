@@ -225,6 +225,41 @@ p {
   padding: 16px 20px;
 }
 
+.error-dialog__body {
+  display: grid;
+  grid-template-columns: 42px 1fr;
+  align-items: start;
+  gap: 14px;
+}
+
+.error-dialog__body strong {
+  color: var(--status-error);
+  font-size: 12px;
+}
+
+.error-dialog__body p {
+  max-height: 52vh;
+  overflow: auto;
+  margin: 5px 0 0;
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.error-dialog__icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--status-error);
+  border-radius: 50%;
+  background: rgb(215 115 115 / 10%);
+  color: var(--status-error);
+  font-size: 22px;
+  font-weight: 750;
+  place-items: center;
+}
+
 .modal__header {
   border-bottom: 1px solid var(--border-primary);
 }
@@ -764,6 +799,12 @@ p {
   background: var(--bg-hover);
 }
 
+.boundary-box-toggle.is-active {
+  border-color: #72cfff;
+  background: rgb(114 207 255 / 18%);
+  color: #bceaff;
+}
+
 .geometry-viewer__fit:focus-visible {
   outline: 2px solid var(--status-info);
   outline-offset: 2px;
@@ -956,6 +997,526 @@ p {
   transform: rotate(45deg);
 }
 
+.model-tree__leaf {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  text-align: left;
+}
+
+.model-tree__leaf.is-selected {
+  background: rgb(114 207 255 / 16%);
+  color: var(--text-primary);
+}
+
+.cfd-panel {
+  position: absolute;
+  z-index: 6;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  width: 440px;
+  max-width: calc(100% - 24px);
+  max-height: calc(100% - 24px);
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 20%);
+  border-radius: var(--radius-sm);
+  background: rgb(17 20 23 / 94%);
+  box-shadow: 0 12px 40px rgb(0 0 0 / 40%);
+  backdrop-filter: blur(12px);
+}
+
+.cfd-panel.is-collapsed {
+  width: 44px;
+}
+
+.cfd-panel__header {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid rgb(255 255 255 / 12%);
+}
+
+.cfd-panel__header > div {
+  display: grid;
+  min-width: 0;
+  padding: 8px 12px;
+}
+
+.cfd-panel__header span {
+  overflow: hidden;
+  color: #72cfff;
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: 0.1em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.cfd-panel__header strong {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cfd-panel__header > button {
+  width: 43px;
+  height: 47px;
+  flex: 0 0 auto;
+  border: 0;
+  border-left: 1px solid rgb(255 255 255 / 12%);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 20px;
+}
+
+.cfd-panel__header > button:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.cfd-panel.is-collapsed .cfd-panel__header > div {
+  display: none;
+}
+
+.cfd-panel.is-collapsed .cfd-panel__header > button {
+  border-left: 0;
+}
+
+.cfd-panel__tabs {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  border-bottom: 1px solid rgb(255 255 255 / 12%);
+}
+
+.cfd-panel__tabs button {
+  min-height: 32px;
+  border: 0;
+  border-right: 1px solid rgb(255 255 255 / 8%);
+  background: transparent;
+  color: var(--text-disabled);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.cfd-panel__tabs button:last-child {
+  border-right: 0;
+}
+
+.cfd-panel__tabs button:hover,
+.cfd-panel__tabs button.is-active {
+  background: rgb(114 207 255 / 9%);
+  color: var(--text-primary);
+}
+
+.cfd-panel__tabs button.is-active {
+  box-shadow: inset 0 -2px 0 #72cfff;
+}
+
+.cfd-panel__body {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.case-overview {
+  gap: 16px;
+}
+
+.case-overview__identity {
+  display: grid;
+  gap: 7px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid rgb(255 255 255 / 12%);
+}
+
+.case-overview__identity .status-chip {
+  width: max-content;
+}
+
+.case-overview__identity h3,
+.case-overview__identity p {
+  margin: 0;
+}
+
+.case-overview__identity h3 {
+  font-size: 20px;
+}
+
+.case-overview__identity p {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.case-overview__metadata {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  margin: 0;
+  border: 1px solid var(--border-primary);
+}
+
+.case-overview__metadata > div {
+  min-width: 0;
+  padding: 10px 12px;
+  border-right: 1px solid var(--border-primary);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.case-overview__metadata > div:nth-child(2n) {
+  border-right: 0;
+}
+
+.case-overview__metadata > div:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
+.case-overview__metadata dt,
+.case-overview__geometry span {
+  margin-bottom: 3px;
+  color: var(--text-disabled);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.case-overview__metadata dd {
+  overflow: hidden;
+  margin: 0;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.case-overview__geometry {
+  display: grid;
+  padding: 12px;
+  border: 1px solid var(--border-primary);
+  background: rgb(255 255 255 / 3%);
+  gap: 10px;
+}
+
+.case-overview__geometry > div:first-child {
+  display: grid;
+}
+
+.case-overview__geometry strong {
+  font-size: 12px;
+}
+
+.case-overview__geometry-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.cfd-form {
+  display: grid;
+  gap: 10px;
+}
+
+.cfd-form h4 {
+  margin: 5px 0 -2px;
+  color: var(--text-secondary);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.cfd-form__columns,
+.cfd-vector {
+  display: grid;
+  gap: 8px;
+}
+
+.cfd-form__columns {
+  grid-template-columns: 1fr 1fr;
+}
+
+.cfd-vector {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.cfd-field {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.cfd-field > span,
+.surface-selection > span {
+  color: var(--text-secondary);
+  font-size: 9px;
+}
+
+.cfd-field input,
+.cfd-field select {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 5px 7px;
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  outline: 0;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 11px;
+}
+
+.cfd-field input:focus,
+.cfd-field select:focus {
+  border-color: #72cfff;
+}
+
+.surface-selection,
+.openfoam-output {
+  display: grid;
+  padding: 10px;
+  border: 1px solid var(--border-primary);
+  background: rgb(255 255 255 / 3%);
+  gap: 5px;
+}
+
+.boundary-box-required {
+  display: grid;
+  padding: 10px;
+  border: 1px solid #735f3c;
+  border-left: 3px solid var(--status-warning);
+  background: rgb(215 168 82 / 7%);
+  gap: 4px;
+}
+
+.boundary-box-required.is-ready {
+  border-color: #315d70;
+  border-left-color: #72cfff;
+  background: rgb(114 207 255 / 6%);
+}
+
+.boundary-box-required strong {
+  font-size: 10px;
+}
+
+.boundary-box-required span {
+  color: var(--text-secondary);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.boundary-box-required .button {
+  width: max-content;
+  margin-top: 4px;
+}
+
+.surface-selection strong {
+  overflow: hidden;
+  margin-bottom: 3px;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.boundary-list {
+  display: grid;
+  max-height: 120px;
+  overflow: auto;
+  border: 1px solid var(--border-primary);
+}
+
+.boundary-list button {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 8px;
+  border: 0;
+  border-bottom: 1px solid var(--border-primary);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 10px;
+  text-align: left;
+}
+
+.boundary-list button:last-child {
+  border-bottom: 0;
+}
+
+.boundary-list button:hover,
+.boundary-list button.is-active {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.boundary-list span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.boundary-list small {
+  color: #72cfff;
+  font-size: 8px;
+  text-transform: uppercase;
+}
+
+.cfd-panel__note {
+  margin: 2px 0;
+  color: var(--text-disabled);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.openfoam-output strong,
+.openfoam-output span {
+  font-size: 10px;
+}
+
+.openfoam-output span {
+  color: var(--text-secondary);
+}
+
+.simulation-progress,
+.status-bar__progress progress {
+  overflow: hidden;
+  width: 100%;
+  height: 5px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--bg-primary);
+  accent-color: #72cfff;
+}
+
+.simulation-progress::-webkit-progress-bar,
+.status-bar__progress progress::-webkit-progress-bar {
+  border-radius: 4px;
+  background: var(--bg-primary);
+}
+
+.simulation-progress::-webkit-progress-value,
+.status-bar__progress progress::-webkit-progress-value {
+  border-radius: 4px;
+  background: #72cfff;
+}
+
+.simulation-error-details {
+  border: 1px solid rgb(215 115 115 / 45%);
+  background: rgb(215 115 115 / 6%);
+}
+
+.simulation-error-details summary {
+  padding: 9px 10px;
+  color: var(--status-error);
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.simulation-error-details pre {
+  max-height: 240px;
+  overflow: auto;
+  margin: 0;
+  padding: 0 10px 10px;
+  color: var(--text-secondary);
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 9px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.cfd-panel__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+  padding: 9px 12px;
+  border-top: 1px solid rgb(255 255 255 / 12%);
+}
+
+.case-geometry-empty--with-panel {
+  position: relative;
+  display: block;
+  min-height: 430px;
+}
+
+.case-geometry-empty__message {
+  display: grid;
+  min-height: 100%;
+  padding-right: 464px;
+  place-content: center;
+  text-align: center;
+}
+
+.case-geometry-empty__message > span {
+  color: var(--border-strong);
+  font-size: 52px;
+}
+
+.case-geometry-empty__message .button {
+  justify-self: center;
+}
+
+.geometry-viewer:has(.cfd-panel) .model-tree {
+  width: min(290px, calc(100% - 480px));
+}
+
+.geometry-viewer:has(.cfd-panel) .geometry-viewer__toolbar {
+  right: 464px;
+  width: 280px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.geometry-viewer:has(.cfd-panel.is-collapsed) .model-tree {
+  width: min(290px, calc(100% - 84px));
+}
+
+.geometry-viewer:has(.cfd-panel.is-collapsed) .geometry-viewer__toolbar {
+  right: 68px;
+  width: auto;
+  flex-wrap: nowrap;
+}
+
+.geometry-viewer.case-geometry-empty {
+  display: block;
+  min-height: 0;
+  border: 0;
+  background: #0d1012;
+}
+
+@media (max-width: 850px) {
+  .cfd-panel {
+    width: 390px;
+  }
+
+  .geometry-viewer:has(.cfd-panel) .model-tree {
+    width: min(210px, calc(100% - 430px));
+  }
+
+  .geometry-viewer:has(.cfd-panel) .geometry-viewer__toolbar {
+    right: 414px;
+    width: 240px;
+  }
+
+  .geometry-viewer:has(.cfd-panel.is-collapsed) .model-tree {
+    width: min(290px, calc(100% - 84px));
+  }
+
+  .geometry-viewer:has(.cfd-panel.is-collapsed) .geometry-viewer__toolbar {
+    right: 68px;
+    width: auto;
+  }
+
+  .case-geometry-empty__message {
+    padding-right: 414px;
+  }
+}
+
 .case-section-heading {
   display: flex;
   align-items: flex-end;
@@ -1117,6 +1678,81 @@ p {
   height: 6px;
   border-radius: 50%;
   background: var(--status-success);
+}
+
+.status-bar__message {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-bar__progress {
+  display: grid;
+  min-width: 220px;
+  max-width: 420px;
+  flex: 1;
+  grid-template-columns: minmax(90px, 1fr) 30px auto;
+  align-items: center;
+  gap: 7px;
+  margin-left: auto;
+}
+
+.status-bar__progress span:last-child {
+  overflow: hidden;
+  max-width: 150px;
+  color: var(--text-disabled);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-bar__logs {
+  padding: 2px 7px;
+  border: 0;
+  border-left: 1px solid var(--border-primary);
+  background: transparent;
+  color: #72cfff;
+  font: inherit;
+  cursor: pointer;
+}
+
+.status-bar__logs:hover {
+  color: var(--text-primary);
+}
+
+.simulation-log-viewer {
+  display: grid;
+  gap: 10px;
+}
+
+.simulation-log-viewer__heading {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.simulation-log-viewer pre {
+  max-height: 48vh;
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--border-primary);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 10px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.simulation-log-viewer__stderr-title {
+  color: var(--status-error);
+  font-size: 10px;
+}
+
+.simulation-log-viewer .simulation-log-viewer__stderr {
+  max-height: 18vh;
+  color: var(--status-error);
 }
 
 .status-bar--error {

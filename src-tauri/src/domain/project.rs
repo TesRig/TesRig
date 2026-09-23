@@ -6,6 +6,19 @@ use uuid::Uuid;
 
 pub const PROJECT_FORMAT_VERSION: u32 = 1;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum UpAxis {
+    #[default]
+    Y,
+    Z,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSettings {
+    pub up_axis: UpAxis,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CaseReference {
@@ -34,6 +47,8 @@ pub struct ProjectManifest {
     pub cases: Vec<CaseReference>,
     #[serde(default)]
     pub geometries: Vec<GeometryAsset>,
+    #[serde(default)]
+    pub settings: ProjectSettings,
 }
 
 impl ProjectManifest {
@@ -48,11 +63,12 @@ impl ProjectManifest {
             updated_at: now,
             cases: Vec::new(),
             geometries: Vec::new(),
+            settings: ProjectSettings::default(),
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectSummary {
     pub format_version: u32,
@@ -64,4 +80,5 @@ pub struct ProjectSummary {
     pub archive_path: String,
     pub cases: Vec<SimulationCase>,
     pub geometries: Vec<GeometryAsset>,
+    pub settings: ProjectSettings,
 }

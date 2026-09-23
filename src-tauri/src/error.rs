@@ -25,6 +25,20 @@ pub enum AppError {
     ArchiveWriteFailed(String),
     #[error("Case was not found: {0}")]
     CaseNotFound(String),
+    #[error("The CFD case setup is invalid: {0}")]
+    InvalidCaseSetup(String),
+    #[error("Generate the OpenFOAM case files before exporting them.")]
+    CaseFilesNotGenerated,
+    #[error("An OpenFOAM case already exists at: {0}")]
+    ExportAlreadyExists(String),
+    #[error("The managed OpenFOAM runtime is unavailable: {0}")]
+    SolverRuntimeUnavailable(String),
+    #[error("A simulation is already running.")]
+    SimulationAlreadyRunning,
+    #[error("No simulation task is available.")]
+    SimulationNotFound,
+    #[error("The project cannot be closed while a simulation is running.")]
+    SimulationRunning,
     #[error("No project is currently open.")]
     NoProjectOpen,
     #[error("The requested project is not the open project.")]
@@ -49,6 +63,13 @@ impl AppError {
             Self::ArchiveReadFailed(_) => "ARCHIVE_READ_FAILED",
             Self::ArchiveWriteFailed(_) => "ARCHIVE_WRITE_FAILED",
             Self::CaseNotFound(_) => "CASE_NOT_FOUND",
+            Self::InvalidCaseSetup(_) => "INVALID_CASE_SETUP",
+            Self::CaseFilesNotGenerated => "CASE_FILES_NOT_GENERATED",
+            Self::ExportAlreadyExists(_) => "EXPORT_ALREADY_EXISTS",
+            Self::SolverRuntimeUnavailable(_) => "SOLVER_RUNTIME_UNAVAILABLE",
+            Self::SimulationAlreadyRunning => "SIMULATION_ALREADY_RUNNING",
+            Self::SimulationNotFound => "SIMULATION_NOT_FOUND",
+            Self::SimulationRunning => "SIMULATION_RUNNING",
             Self::NoProjectOpen => "NO_PROJECT_OPEN",
             Self::ProjectMismatch => "PROJECT_MISMATCH",
             Self::IoError(_) => "IO_ERROR",

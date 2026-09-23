@@ -1,12 +1,13 @@
 import { Button } from "../../../components/common/Button";
 import { GeometryViewer } from "../../geometry/components/GeometryViewer";
-import type { ProjectSummary } from "../project.types";
+import type { ProjectSummary, UpAxis } from "../project.types";
 
 interface ProjectOverviewProps {
   project: ProjectSummary;
   selectedGeometryId: string | null;
   onGeometryChange: (geometryId: string) => void;
   onAddGeometry: () => void;
+  onUpAxisChange: (upAxis: UpAxis) => void;
   busy: boolean;
 }
 
@@ -15,6 +16,7 @@ export function ProjectOverview({
   selectedGeometryId,
   onGeometryChange,
   onAddGeometry,
+  onUpAxisChange,
   busy,
 }: ProjectOverviewProps) {
   const selected =
@@ -28,6 +30,8 @@ export function ProjectOverview({
           geometry={selected}
           geometries={project.geometries}
           onGeometryChange={onGeometryChange}
+          upAxis={project.settings.upAxis}
+          onUpAxisChange={onUpAxisChange}
         />
       </section>
     );

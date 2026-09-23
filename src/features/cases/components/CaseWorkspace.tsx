@@ -1,27 +1,120 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Button } from "../../../components/common/Button";
 import { toUserMessage } from "../../../lib/errors/app-error";
 import { useWorkspace } from "../../../stores/workspace.store";
 import { GeometryViewer } from "../../geometry/components/GeometryViewer";
 import { assignGeometry, chooseGeometryFile, importGeometry } from "../../geometry/geometry.api";
+import { ensureGeometryTriangulated } from "../../geometry/step-geometry";
+import type { UpAxis } from "../../projects/project.types";
 import type { SimulationCase } from "../case.types";
+import {
+  chooseCaseExportDirectory,
+  cancelSimulation,
+  exportOpenFoamCase,
+  getOpenFoamRuntime,
+  getSimulationStatus,
+  startSimulation,
+  updateCaseSetup,
+  validateCase,
+} from "../case.api";
+import { CfdSetupPanel } from "./CfdSetupPanel";
+import type { OpenFoamRuntimeStatus, SimulationJob } from "../case.types";
 
 interface CaseWorkspaceProps {
   simulationCase: SimulationCase;
   onCreateVariant: (caseId: string) => void;
   onStatus: (message: string, isError?: boolean) => void;
+  onUpAxisChange: (upAxis: UpAxis) => void;
+  onSimulationChange: (job: SimulationJob | null) => void;
 }
 
-const futureStages = ["Setup", "Analyze", "Results"];
-
-export function CaseWorkspace({ simulationCase, onCreateVariant, onStatus }: CaseWorkspaceProps) {
+export function CaseWorkspace({
+  simulationCase,
+  onCreateVariant,
+  onStatus,
+  onUpAxisChange,
+  onSimulationChange,
+}: CaseWorkspaceProps) {
   const { project, syncProject } = useWorkspace();
   const [busy, setBusy] = useState(false);
   const [selection, setSelection] = useState(simulationCase.geometryId ?? "");
+  const [setup, setSetup] = useState(simulationCase.cfdSetup);
+  const [selectedSurface, setSelectedSurface] = useState<string | null>(null);
+  const [runtime, setRuntime] = useState<OpenFoamRuntimeStatus | null>(null);
+  const [job, setJob] = useState<SimulationJob | null>(null);
   const geometry = project?.geometries.find(({ id }) => id === simulationCase.geometryId);
   const sourceCase = project?.cases.find(({ id }) => id === simulationCase.variantOfCaseId);
+  const simulationActive = Boolean(
+    job && ["Starting", "Running", "Cancelling"].includes(job.status),
+  );
 
   useEffect(() => setSelection(simulationCase.geometryId ?? ""), [simulationCase.geometryId]);
+  useEffect(() => setSelectedSurface(null), [simulationCase.geometryId]);
+  useEffect(() => setSetup(simulationCase.cfdSetup), [simulationCase.cfdSetup]);
+  useEffect(() => onSimulationChange(job), [job, onSimulationChange]);
+  useEffect(() => {
+    let disposed = false;
+    async function initializeRunState() {
+      try {
+        const [nextRuntime, currentJob] = await Promise.all([
+          getOpenFoamRuntime(),
+          getSimulationStatus(),
+        ]);
+        if (disposed) return;
+        setRuntime(nextRuntime);
+        setJob(currentJob);
+
+        const autoRun = import.meta.env.DEV && import.meta.env.VITE_TESRIG_DEV_AUTORUN === "1";
+        if (!autoRun || currentJob || !nextRuntime.runtimeReady || !project || !geometry) return;
+
+        setBusy(true);
+        onStatus("Preparing the automatic OpenFOAM smoke test…");
+        if (geometry.format === "STEP") {
+          await ensureGeometryTriangulated(project.id, geometry);
+        }
+        const updated = await updateCaseSetup(
+          project.id,
+          simulationCase.id,
+          simulationCase.cfdSetup,
+        );
+        syncProject(updated);
+        const started = await startSimulation(project.id, simulationCase.id);
+        if (!disposed) {
+          setJob(started);
+          onStatus("Simulation running.");
+        }
+      } catch (error) {
+        if (!disposed) onStatus(toUserMessage(error), true);
+      } finally {
+        if (!disposed) setBusy(false);
+      }
+    }
+    void initializeRunState();
+    return () => {
+      disposed = true;
+    };
+    // The auto-run bootstrap is intentionally tied to mounting a selected test case.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    if (!job || !["Starting", "Running", "Cancelling"].includes(job.status)) return;
+    const interval = window.setInterval(() => {
+      void getSimulationStatus()
+        .then((nextJob) => {
+          setJob(nextJob);
+          if (nextJob?.status === "Completed") {
+            onStatus("OpenFOAM simulation completed.");
+          } else if (nextJob?.status === "Failed") {
+            onStatus(nextJob.error ?? "OpenFOAM simulation failed.", true);
+          } else if (nextJob?.status === "Cancelled") {
+            onStatus("Simulation cancelled.");
+          }
+        })
+        .catch((error) => onStatus(toUserMessage(error), true));
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [job, onStatus]);
+  const selectSurface = useCallback((surface: string) => setSelectedSurface(surface), []);
 
   async function handleImport() {
     if (!project) return;
@@ -59,99 +152,133 @@ export function CaseWorkspace({ simulationCase, onCreateVariant, onStatus }: Cas
     }
   }
 
+  async function handleSaveSetup() {
+    if (!project) return;
+    setBusy(true);
+    onStatus("Validating and generating OpenFOAM case…");
+    try {
+      if (geometry?.format === "STEP") {
+        onStatus("Triangulating STEP geometry for OpenFOAM…");
+        await ensureGeometryTriangulated(project.id, geometry);
+      }
+      const updated = await updateCaseSetup(project.id, simulationCase.id, setup);
+      syncProject(updated);
+      const validation = await validateCase(project.id, simulationCase.id);
+      onStatus(
+        validation.warnings.length > 0
+          ? `OpenFOAM case generated. ${validation.warnings.join(" ")}`
+          : "OpenFOAM case generated and ready for ParaView.",
+      );
+    } catch (error) {
+      onStatus(toUserMessage(error), true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleExport() {
+    if (!project) return;
+    const destination = await chooseCaseExportDirectory();
+    if (typeof destination !== "string") return;
+    setBusy(true);
+    onStatus("Exporting OpenFOAM case…");
+    try {
+      const path = await exportOpenFoamCase(project.id, simulationCase.id, destination);
+      onStatus(`OpenFOAM case exported to ${path}. Open TesRig.foam in ParaView.`);
+    } catch (error) {
+      onStatus(toUserMessage(error), true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleRun() {
+    if (!project) return;
+    setBusy(true);
+    onStatus("Preparing OpenFOAM case…");
+    try {
+      if (geometry?.format === "STEP") {
+        onStatus("Triangulating STEP geometry for OpenFOAM…");
+        await ensureGeometryTriangulated(project.id, geometry);
+      }
+      const updated = await updateCaseSetup(project.id, simulationCase.id, setup);
+      syncProject(updated);
+      const started = await startSimulation(project.id, simulationCase.id);
+      setJob(started);
+      onStatus("Simulation running.");
+    } catch (error) {
+      onStatus(toUserMessage(error), true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleCancel() {
+    onStatus("Stopping simulation…");
+    try {
+      setJob(await cancelSimulation());
+    } catch (error) {
+      onStatus(toUserMessage(error), true);
+    }
+  }
+
+  const setupPanel = (
+    <CfdSetupPanel
+      simulationCase={simulationCase}
+      sourceCaseName={sourceCase?.name}
+      geometry={geometry}
+      geometries={project?.geometries ?? []}
+      geometrySelection={selection}
+      onGeometrySelectionChange={setSelection}
+      onAssignGeometry={handleAssign}
+      onImportGeometry={handleImport}
+      onCreateVariant={() => onCreateVariant(simulationCase.id)}
+      setup={setup}
+      selectedSurface={geometry ? selectedSurface : null}
+      busy={busy || simulationActive}
+      onChange={setSetup}
+      onSave={handleSaveSetup}
+      onExport={handleExport}
+      runtime={runtime}
+      job={job}
+      onRun={handleRun}
+      onCancel={handleCancel}
+    />
+  );
+
   return (
-    <section className="workspace-content workspace-content--wide">
-      <header className="workspace-heading">
-        <div>
-          <p className="eyebrow">{sourceCase ? `Variant of ${sourceCase.name}` : "Case"}</p>
-          <h1>{simulationCase.name}</h1>
-          <p>{simulationCase.description || "No description provided."}</p>
-        </div>
-        <div className="workspace-heading__actions">
-          <span className="status-chip">{simulationCase.status}</span>
-          <Button onClick={() => onCreateVariant(simulationCase.id)}>Create variant</Button>
-        </div>
-      </header>
-
-      <dl className="metadata-grid">
-        <div>
-          <dt>Simulation type</dt>
-          <dd>Flow / {simulationCase.simulationType}</dd>
-        </div>
-        <div>
-          <dt>Solver</dt>
-          <dd>{simulationCase.solver}</dd>
-        </div>
-        <div>
-          <dt>Created</dt>
-          <dd>{new Date(simulationCase.createdAt).toLocaleString()}</dd>
-        </div>
-      </dl>
-
-      <div className="case-section-heading">
-        <div>
-          <p className="eyebrow">01 · Geometry</p>
-          <h2>{geometry ? geometry.name : "No geometry assigned"}</h2>
-        </div>
-        <div className="case-geometry-actions">
-          {project && project.geometries.length > 0 && (
-            <>
-              <select
-                className="field__control geometry-select"
-                aria-label="Project geometry"
-                value={selection}
-                onChange={(event) => setSelection(event.target.value)}
-                disabled={busy}
-              >
-                <option value="">Choose project geometry</option>
-                {project.geometries.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.name} ({item.format})
-                  </option>
-                ))}
-              </select>
-              <Button
-                onClick={handleAssign}
-                disabled={busy || !selection || selection === geometry?.id}
-              >
-                Use geometry
-              </Button>
-            </>
-          )}
-          <Button
-            variant={geometry ? "secondary" : "primary"}
-            onClick={handleImport}
-            disabled={busy}
-          >
-            {geometry ? "Replace with import" : "Import geometry"}
-          </Button>
-        </div>
-      </div>
-
+    <section className="geometry-editor case-editor">
       {geometry ? (
-        <GeometryViewer projectId={project!.id} geometry={geometry} />
+        <GeometryViewer
+          projectId={project!.id}
+          geometry={geometry}
+          selectedSurface={selectedSurface}
+          onSurfaceSelect={selectSurface}
+          upAxis={project!.settings.upAxis}
+          onUpAxisChange={onUpAxisChange}
+          boundaryBox={setup.boundaryBox}
+          flowVelocity={setup.initialConditions.velocity}
+          onBoundaryBoxChange={(boundaryBox) =>
+            setSetup((current) => ({ ...current, boundaryBox }))
+          }
+        >
+          {setupPanel}
+        </GeometryViewer>
       ) : (
-        <div className="case-geometry-empty">
-          <span>◇</span>
-          <h3>Add geometry to continue</h3>
-          <p>
-            Import an STL, OBJ, or STEP file, or choose an asset already stored in this project.
-          </p>
-          <Button variant="primary" onClick={handleImport} disabled={busy}>
-            Choose geometry file
-          </Button>
+        <div className="geometry-viewer case-geometry-empty case-geometry-empty--with-panel">
+          <div className="case-geometry-empty__message">
+            <span>◇</span>
+            <h3>Add geometry to continue</h3>
+            <p>
+              Import an STL, OBJ, or STEP file, or choose an asset already stored in this project.
+            </p>
+            <Button variant="primary" onClick={handleImport} disabled={busy || simulationActive}>
+              Choose geometry file
+            </Button>
+          </div>
+          {setupPanel}
         </div>
       )}
-
-      <div className="stage-list" aria-label="Future workflow stages">
-        {futureStages.map((stage, index) => (
-          <div className="stage-list__item" key={stage} aria-disabled="true">
-            <span className="stage-list__number">0{index + 2}</span>
-            <span>{stage}</span>
-            <span className="stage-list__state">Coming next</span>
-          </div>
-        ))}
-      </div>
     </section>
   );
 }

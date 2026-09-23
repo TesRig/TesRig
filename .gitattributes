@@ -1,0 +1,1 @@
+src-tauri/resources/openfoam/windows-native/OpenFOAMv2606.zip filter=lfs diff=lfs merge=lfs -text

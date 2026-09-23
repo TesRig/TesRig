@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 2,
+  "distribution": "OpenCFD OpenFOAM",
+  "version": "v2606",
+  "license": "GPL-3.0-or-later",
+  "windowsBackend": "native-mingw",
+  "archive": "windows-native/OpenFOAMv2606.zip",
+  "installedRuntimeDirectory": "openfoam/v2606",
+  "gpuArchitectureIncluded": false,
+  "fallback": {
+    "backend": "wsl2",
+    "distribution": "Ubuntu",
+    "version": "14",
+    "environmentScript": "/opt/openfoam14/etc/bashrc"
+  }
+}

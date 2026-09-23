@@ -5,6 +5,7 @@ import type {
   OpenProjectInput,
   ProjectIdInput,
   ProjectSummary,
+  UpdateProjectSettingsInput,
 } from "./project.types";
 
 const projectFilter = [{ name: "TesRig Project", extensions: ["tsrig"] }];
@@ -13,12 +14,23 @@ export function createProject(input: CreateProjectInput) {
   return invokeCommand<ProjectSummary, CreateProjectInput>("create_project", input);
 }
 
+export function getCurrentProject() {
+  return invokeCommand<ProjectSummary | null>("get_current_project");
+}
+
 export function openProject(input: OpenProjectInput) {
   return invokeCommand<ProjectSummary, OpenProjectInput>("open_project", input);
 }
 
 export function saveProject(input: ProjectIdInput) {
   return invokeCommand<ProjectSummary, ProjectIdInput>("save_project", input);
+}
+
+export function updateProjectSettings(input: UpdateProjectSettingsInput) {
+  return invokeCommand<ProjectSummary, UpdateProjectSettingsInput>(
+    "update_project_settings",
+    input,
+  );
 }
 
 export function closeProject() {

@@ -4,13 +4,16 @@ import {
   useContext,
   useMemo,
   useState,
+  useEffect,
   type PropsWithChildren,
 } from "react";
 import type { SimulationCase } from "../features/cases/case.types";
 import type { ProjectSummary } from "../features/projects/project.types";
+import { getCurrentProject } from "../features/projects/project.api";
 
 interface WorkspaceContextValue {
   project: ProjectSummary | null;
+  workspaceReady: boolean;
   activeCaseId: string | null;
   activeCase: SimulationCase | null;
   setProject: (project: ProjectSummary | null) => void;
@@ -24,6 +27,24 @@ const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
 export function WorkspaceProvider({ children }: PropsWithChildren) {
   const [project, setProjectState] = useState<ProjectSummary | null>(null);
   const [activeCaseId, setActiveCaseId] = useState<string | null>(null);
+  const [workspaceReady, setWorkspaceReady] = useState(false);
+
+  useEffect(() => {
+    let disposed = false;
+    void getCurrentProject()
+      .then((current) => {
+        if (disposed || !current) return;
+        setProjectState(current);
+        setActiveCaseId(current.cases[0]?.id ?? null);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (!disposed) setWorkspaceReady(true);
+      });
+    return () => {
+      disposed = true;
+    };
+  }, []);
 
   const setProject = useCallback((nextProject: ProjectSummary | null) => {
     setProjectState(nextProject);
@@ -56,6 +77,7 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
   const value = useMemo(
     () => ({
       project,
+      workspaceReady,
       activeCaseId,
       activeCase,
       setProject,
@@ -63,7 +85,7 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
       addCase,
       syncProject,
     }),
-    [project, activeCaseId, activeCase, setProject, addCase, syncProject],
+    [project, workspaceReady, activeCaseId, activeCase, setProject, addCase, syncProject],
   );
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;

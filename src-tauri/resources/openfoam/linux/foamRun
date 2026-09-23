@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+set -eu
+. "${TESRIG_OPENFOAM_HOME:-/opt/openfoam14}/etc/bashrc"
+exec foamRun "$@"

@@ -3,6 +3,7 @@ import { WelcomeScreen } from "../features/projects/components/WelcomeScreen";
 import { useWorkspace } from "../stores/workspace.store";
 
 export function AppRouter() {
-  const { project } = useWorkspace();
+  const { project, workspaceReady } = useWorkspace();
+  if (!workspaceReady) return null;
   return project ? <WorkspaceShell /> : <WelcomeScreen />;
 }

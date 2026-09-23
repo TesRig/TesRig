@@ -1,15 +1,16 @@
 use super::archive_service::ArchiveService;
 use super::workspace_service::{OpenWorkspace, WorkspaceService};
-use crate::domain::case::{SimulationCase, SimulationType, Solver};
+use crate::domain::case::{CaseStatus, CfdSetup, SimulationCase, SimulationType, Solver};
 use crate::domain::geometry::{GeometryAsset, GeometryFormat};
 use crate::domain::project::{
-    CaseReference, ProjectManifest, ProjectSummary, PROJECT_FORMAT_VERSION,
+    CaseReference, ProjectManifest, ProjectSettings, ProjectSummary, PROJECT_FORMAT_VERSION,
 };
 use crate::error::{AppError, AppResult};
+use crate::solver::openfoam::{CaseValidation, OpenFoamAdapter};
 use chrono::Utc;
 use serde_json::Value;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 #[derive(Debug, Default)]
@@ -55,6 +56,7 @@ impl ProjectService {
         let (manifest, cases) = load_workspace(workspace.root())?;
         workspace.manifest = manifest;
         workspace.cases = cases;
+        generate_solver_files(workspace.root(), &workspace.manifest, &workspace.cases)?;
         let summary = summarize(&workspace);
         self.workspaces.activate(workspace);
         Ok(summary)
@@ -63,6 +65,20 @@ impl ProjectService {
     pub fn save_project(&mut self, project_id: Uuid) -> AppResult<ProjectSummary> {
         let workspace = self.workspaces.current()?;
         ensure_project(workspace, project_id)?;
+        write_models(workspace.root(), &workspace.manifest, &workspace.cases)?;
+        ArchiveService::write(workspace.root(), &workspace.archive_path)?;
+        Ok(summarize(workspace))
+    }
+
+    pub fn update_project_settings(
+        &mut self,
+        project_id: Uuid,
+        settings: ProjectSettings,
+    ) -> AppResult<ProjectSummary> {
+        let workspace = self.workspaces.current_mut()?;
+        ensure_project(workspace, project_id)?;
+        workspace.manifest.settings = settings;
+        workspace.manifest.updated_at = Utc::now();
         persist_workspace(workspace)?;
         Ok(summarize(workspace))
     }
@@ -71,6 +87,11 @@ impl ProjectService {
         self.workspaces.close();
     }
 
+    pub fn current_project(&self) -> Option<ProjectSummary> {
+        self.workspaces.current().ok().map(summarize)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn create_case(
         &mut self,
         project_id: Uuid,
@@ -88,27 +109,28 @@ impl ProjectService {
         if let Some(geometry_id) = geometry_id {
             ensure_geometry(workspace, geometry_id)?;
         }
-        let inherited_geometry = if let Some(source_id) = variant_of_case_id {
+        let inherited_case = if let Some(source_id) = variant_of_case_id {
             Some(
                 workspace
                     .cases
                     .iter()
                     .find(|item| item.id == source_id)
-                    .ok_or_else(|| AppError::CaseNotFound(source_id.to_string()))?
-                    .geometry_id,
+                    .ok_or_else(|| AppError::CaseNotFound(source_id.to_string()))?,
             )
-            .flatten()
         } else {
             None
         };
-        let simulation_case = SimulationCase::new(
+        let mut simulation_case = SimulationCase::new(
             name,
             description.trim().to_owned(),
             simulation_type,
             solver,
-            geometry_id.or(inherited_geometry),
+            geometry_id.or_else(|| inherited_case.and_then(|item| item.geometry_id)),
             variant_of_case_id,
         );
+        if let Some(source) = inherited_case {
+            simulation_case.cfd_setup = source.cfd_setup.clone();
+        }
         let mut next_manifest = workspace.manifest.clone();
         let mut next_cases = workspace.cases.clone();
         next_manifest
@@ -118,6 +140,7 @@ impl ProjectService {
         next_cases.push(simulation_case.clone());
 
         write_models(workspace.root(), &next_manifest, &next_cases)?;
+        generate_solver_files(workspace.root(), &next_manifest, &next_cases)?;
         ArchiveService::write(workspace.root(), &workspace.archive_path)?;
         workspace.manifest = next_manifest;
         workspace.cases = next_cases;
@@ -139,6 +162,106 @@ impl ProjectService {
             .find(|simulation_case| simulation_case.id == case_id)
             .cloned()
             .ok_or_else(|| AppError::CaseNotFound(case_id.to_string()))
+    }
+
+    pub fn update_case_setup(
+        &mut self,
+        project_id: Uuid,
+        case_id: Uuid,
+        setup: CfdSetup,
+    ) -> AppResult<ProjectSummary> {
+        OpenFoamAdapter::validate(&setup)?;
+        let workspace = self.workspaces.current_mut()?;
+        ensure_project(workspace, project_id)?;
+        let target_case = workspace
+            .cases
+            .iter_mut()
+            .find(|item| item.id == case_id)
+            .ok_or_else(|| AppError::CaseNotFound(case_id.to_string()))?;
+        target_case.cfd_setup = setup;
+        target_case.status = if target_case.geometry_id.is_some() {
+            CaseStatus::Ready
+        } else {
+            CaseStatus::Draft
+        };
+        target_case.updated_at = Utc::now();
+        workspace.manifest.updated_at = Utc::now();
+        persist_workspace(workspace)?;
+        Ok(summarize(workspace))
+    }
+
+    pub fn validate_case(&self, project_id: Uuid, case_id: Uuid) -> AppResult<CaseValidation> {
+        let workspace = self.workspaces.current()?;
+        ensure_project(workspace, project_id)?;
+        let simulation_case = workspace
+            .cases
+            .iter()
+            .find(|item| item.id == case_id)
+            .ok_or_else(|| AppError::CaseNotFound(case_id.to_string()))?;
+        let geometry = simulation_case
+            .geometry_id
+            .map(|id| ensure_geometry(workspace, id))
+            .transpose()?;
+        OpenFoamAdapter::generate(workspace.root(), simulation_case, geometry)
+    }
+
+    pub fn export_openfoam_case(
+        &mut self,
+        project_id: Uuid,
+        case_id: Uuid,
+        destination: &Path,
+    ) -> AppResult<String> {
+        let workspace = self.workspaces.current_mut()?;
+        ensure_project(workspace, project_id)?;
+        write_models(workspace.root(), &workspace.manifest, &workspace.cases)?;
+        ArchiveService::write(workspace.root(), &workspace.archive_path)?;
+        let case_root = workspace
+            .root()
+            .join("cases")
+            .join(case_id.to_string())
+            .join("openfoam");
+        if !workspace.cases.iter().any(|item| item.id == case_id) {
+            return Err(AppError::CaseNotFound(case_id.to_string()));
+        }
+        Ok(OpenFoamAdapter::export(&case_root, destination)?
+            .to_string_lossy()
+            .into_owned())
+    }
+
+    pub fn prepare_simulation(&mut self, project_id: Uuid, case_id: Uuid) -> AppResult<PathBuf> {
+        let workspace = self.workspaces.current_mut()?;
+        ensure_project(workspace, project_id)?;
+        let simulation_case = workspace
+            .cases
+            .iter()
+            .find(|item| item.id == case_id)
+            .ok_or_else(|| AppError::CaseNotFound(case_id.to_string()))?;
+        let geometry_id = simulation_case.geometry_id.ok_or_else(|| {
+            AppError::InvalidCaseSetup(
+                "Assign a geometry before starting the simulation.".to_owned(),
+            )
+        })?;
+        let geometry = ensure_geometry(workspace, geometry_id)?;
+        if geometry.format == GeometryFormat::Step
+            && !workspace
+                .root()
+                .join("geometries")
+                .join(geometry.triangulated_file_name())
+                .is_file()
+        {
+            return Err(AppError::InvalidCaseSetup(
+                "TesRig could not find the triangulated mesh for this STEP geometry. Generate the case again to rebuild it."
+                    .to_owned(),
+            ));
+        }
+        let case_root = workspace
+            .root()
+            .join("cases")
+            .join(case_id.to_string())
+            .join("openfoam");
+        OpenFoamAdapter::clear_results(&case_root)?;
+        persist_workspace(workspace)?;
+        Ok(case_root)
     }
 
     pub fn import_geometry(
@@ -178,6 +301,7 @@ impl ProjectService {
                 .find(|item| item.id == case_id)
                 .ok_or_else(|| AppError::CaseNotFound(case_id.to_string()))?;
             target_case.geometry_id = Some(asset.id);
+            target_case.status = CaseStatus::Ready;
             target_case.updated_at = Utc::now();
         }
 
@@ -209,6 +333,7 @@ impl ProjectService {
             .find(|item| item.id == case_id)
             .ok_or_else(|| AppError::CaseNotFound(case_id.to_string()))?;
         target_case.geometry_id = Some(geometry_id);
+        target_case.status = CaseStatus::Ready;
         target_case.updated_at = Utc::now();
         workspace.manifest.updated_at = Utc::now();
         persist_workspace(workspace)?;
@@ -227,6 +352,7 @@ impl ProjectService {
         for simulation_case in &mut workspace.cases {
             if simulation_case.geometry_id == Some(geometry_id) {
                 simulation_case.geometry_id = None;
+                simulation_case.status = CaseStatus::Draft;
                 simulation_case.updated_at = Utc::now();
             }
         }
@@ -243,6 +369,13 @@ impl ProjectService {
         if geometry_path.exists() {
             fs::remove_file(geometry_path).map_err(AppError::io)?;
         }
+        let triangulated_path = workspace
+            .root()
+            .join("geometries")
+            .join(geometry.triangulated_file_name());
+        if triangulated_path.exists() {
+            fs::remove_file(triangulated_path).map_err(AppError::io)?;
+        }
         persist_workspace(workspace)?;
         Ok(summarize(workspace))
     }
@@ -258,6 +391,45 @@ impl ProjectService {
                 .join(geometry.stored_file_name()),
         )
         .map_err(AppError::io)
+    }
+
+    pub fn has_geometry_triangulation(
+        &self,
+        project_id: Uuid,
+        geometry_id: Uuid,
+    ) -> AppResult<bool> {
+        let workspace = self.workspaces.current()?;
+        ensure_project(workspace, project_id)?;
+        let geometry = ensure_geometry(workspace, geometry_id)?;
+        Ok(geometry.format != GeometryFormat::Step
+            || workspace
+                .root()
+                .join("geometries")
+                .join(geometry.triangulated_file_name())
+                .is_file())
+    }
+
+    pub fn save_geometry_triangulation(
+        &mut self,
+        project_id: Uuid,
+        geometry_id: Uuid,
+        bytes: &[u8],
+    ) -> AppResult<()> {
+        let workspace = self.workspaces.current_mut()?;
+        ensure_project(workspace, project_id)?;
+        let geometry = ensure_geometry(workspace, geometry_id)?;
+        if geometry.format != GeometryFormat::Step || bytes.len() < 84 {
+            return Err(AppError::InvalidCaseSetup(
+                "The generated STEP triangulation is invalid.".to_owned(),
+            ));
+        }
+        let target = workspace
+            .root()
+            .join("geometries")
+            .join(geometry.triangulated_file_name());
+        fs::write(target, bytes).map_err(AppError::io)?;
+        ArchiveService::write(workspace.root(), &workspace.archive_path)?;
+        Ok(())
     }
 }
 
@@ -301,7 +473,25 @@ fn ensure_geometry(workspace: &OpenWorkspace, geometry_id: Uuid) -> AppResult<&G
 
 fn persist_workspace(workspace: &OpenWorkspace) -> AppResult<()> {
     write_models(workspace.root(), &workspace.manifest, &workspace.cases)?;
+    generate_solver_files(workspace.root(), &workspace.manifest, &workspace.cases)?;
     ArchiveService::write(workspace.root(), &workspace.archive_path)
+}
+
+fn generate_solver_files(
+    root: &Path,
+    manifest: &ProjectManifest,
+    cases: &[SimulationCase],
+) -> AppResult<()> {
+    for simulation_case in cases {
+        let geometry = simulation_case.geometry_id.and_then(|geometry_id| {
+            manifest
+                .geometries
+                .iter()
+                .find(|geometry| geometry.id == geometry_id)
+        });
+        OpenFoamAdapter::generate(root, simulation_case, geometry)?;
+    }
+    Ok(())
 }
 
 fn write_models(
@@ -367,12 +557,14 @@ fn summarize(workspace: &OpenWorkspace) -> ProjectSummary {
         archive_path: workspace.archive_path.to_string_lossy().into_owned(),
         cases: workspace.cases.clone(),
         geometries: workspace.manifest.geometries.clone(),
+        settings: workspace.manifest.settings.clone(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::project::UpAxis;
     use std::io::Write;
     use zip::write::SimpleFileOptions;
     use zip::{ZipArchive, ZipWriter};
@@ -421,17 +613,25 @@ mod tests {
             .expect("case creation");
 
         assert_ne!(simulation_case.id, Uuid::nil());
+        service
+            .update_project_settings(project.id, ProjectSettings { up_axis: UpAxis::Z })
+            .expect("project settings update");
         service.close_project();
         let reopened = service
             .open_project(&archive_path)
             .expect("project reopening");
 
         assert_eq!(reopened.description, "Persistent metadata");
+        assert_eq!(reopened.settings.up_axis, UpAxis::Z);
         assert_eq!(reopened.cases, vec![simulation_case.clone()]);
         let file = fs::File::open(&archive_path).expect("archive file");
         let mut archive = ZipArchive::new(file).expect("valid zip");
         let case_entry = format!("cases/{}/case.json", simulation_case.id);
         assert!(archive.by_name(&case_entry).is_ok());
+        let control_dict = format!("cases/{}/openfoam/system/controlDict", simulation_case.id);
+        assert!(archive.by_name(&control_dict).is_ok());
+        let paraview_marker = format!("cases/{}/openfoam/TesRig.foam", simulation_case.id);
+        assert!(archive.by_name(&paraview_marker).is_ok());
         let manifest = archive.by_name("project.json").expect("manifest");
         let decoded: ProjectManifest = serde_json::from_reader(manifest).expect("valid manifest");
         assert_eq!(decoded.cases[0].id, simulation_case.id);
@@ -498,6 +698,11 @@ mod tests {
                 None,
             )
             .expect("base case");
+        let mut inherited_setup = base_case.cfd_setup.clone();
+        inherited_setup.fluid.density = 1.18;
+        service
+            .update_case_setup(project.id, base_case.id, inherited_setup.clone())
+            .expect("base setup update");
         let variant = service
             .create_case(
                 project.id,
@@ -511,6 +716,7 @@ mod tests {
             .expect("variant");
         assert_eq!(variant.geometry_id, Some(geometry.id));
         assert_eq!(variant.variant_of_case_id, Some(base_case.id));
+        assert_eq!(variant.cfd_setup, inherited_setup);
 
         service.close_project();
         let reopened = service
@@ -562,6 +768,49 @@ mod tests {
             service.get_geometry_data(project.id, geometry.id),
             Err(AppError::GeometryNotFound(_))
         ));
+    }
+
+    #[test]
+    fn caches_step_triangulation_for_openfoam() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let archive_path = directory.path().join("step-mesh.tsrig");
+        let source_path = directory.path().join("wing.step");
+        fs::write(&source_path, b"ISO-10303-21;\nEND-ISO-10303-21;").expect("STEP fixture");
+
+        let mut service = ProjectService::new();
+        let project = service
+            .create_project("STEP mesh", "", &archive_path)
+            .expect("project creation");
+        let imported = service
+            .import_geometry(project.id, None, &source_path)
+            .expect("geometry import");
+        let geometry = &imported.geometries[0];
+        assert!(!service
+            .has_geometry_triangulation(project.id, geometry.id)
+            .unwrap());
+
+        service
+            .save_geometry_triangulation(project.id, geometry.id, &[0; 84])
+            .expect("triangulation cache");
+        assert!(service
+            .has_geometry_triangulation(project.id, geometry.id)
+            .unwrap());
+
+        let simulation_case = service
+            .create_case(
+                project.id,
+                "STEP CFD",
+                "",
+                SimulationType::Cfd,
+                Solver::OpenFOAM,
+                Some(geometry.id),
+                None,
+            )
+            .expect("case creation");
+        let case_root = service
+            .prepare_simulation(project.id, simulation_case.id)
+            .expect("STEP simulation preparation");
+        assert!(case_root.join("constant/triSurface/geometry.stl").is_file());
     }
 
     #[test]

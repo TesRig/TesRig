@@ -36,6 +36,14 @@ pub struct RemoveGeometryRequest {
     geometry_id: Uuid,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveGeometryTriangulationRequest {
+    project_id: Uuid,
+    geometry_id: Uuid,
+    bytes: Vec<u8>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GeometryData {
@@ -47,6 +55,7 @@ pub fn import_geometry(
     request: ImportGeometryRequest,
     state: State<'_, AppState>,
 ) -> AppResult<ProjectSummary> {
+    state.ensure_simulation_idle()?;
     let mut service = state
         .project_service
         .lock()
@@ -73,10 +82,36 @@ pub fn get_geometry_data(
 }
 
 #[tauri::command]
+pub fn has_geometry_triangulation(
+    request: GeometryDataRequest,
+    state: State<'_, AppState>,
+) -> AppResult<bool> {
+    let service = state
+        .project_service
+        .lock()
+        .map_err(|_| AppError::InternalError("project service lock was poisoned".to_owned()))?;
+    service.has_geometry_triangulation(request.project_id, request.geometry_id)
+}
+
+#[tauri::command]
+pub fn save_geometry_triangulation(
+    request: SaveGeometryTriangulationRequest,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    state.ensure_simulation_idle()?;
+    let mut service = state
+        .project_service
+        .lock()
+        .map_err(|_| AppError::InternalError("project service lock was poisoned".to_owned()))?;
+    service.save_geometry_triangulation(request.project_id, request.geometry_id, &request.bytes)
+}
+
+#[tauri::command]
 pub fn assign_geometry(
     request: AssignGeometryRequest,
     state: State<'_, AppState>,
 ) -> AppResult<ProjectSummary> {
+    state.ensure_simulation_idle()?;
     let mut service = state
         .project_service
         .lock()
@@ -89,6 +124,7 @@ pub fn remove_geometry(
     request: RemoveGeometryRequest,
     state: State<'_, AppState>,
 ) -> AppResult<ProjectSummary> {
+    state.ensure_simulation_idle()?;
     let mut service = state
         .project_service
         .lock()
