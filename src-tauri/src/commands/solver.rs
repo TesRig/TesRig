@@ -57,6 +57,11 @@ pub fn get_simulation_log(state: State<'_, AppState>) -> AppResult<SimulationLog
 }
 
 #[tauri::command]
+pub fn clear_simulation_log(state: State<'_, AppState>) -> AppResult<SimulationLog> {
+    state.simulation_manager.clear_logs()
+}
+
+#[tauri::command]
 pub fn cancel_simulation(state: State<'_, AppState>) -> AppResult<SimulationJob> {
     state.simulation_manager.cancel()
 }

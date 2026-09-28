@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type UIEvent } from "react";
 import appIconUrl from "../../../src-tauri/icons/app-icon.svg";
 import { NewCaseDialog } from "../../features/cases/components/NewCaseDialog";
 import { CaseWorkspace } from "../../features/cases/components/CaseWorkspace";
-import { getSimulationLog } from "../../features/cases/case.api";
+import { clearSimulationLog, getSimulationLog } from "../../features/cases/case.api";
 import type { SimulationJob, SimulationLog } from "../../features/cases/case.types";
 import {
   chooseGeometryFile,
@@ -38,6 +38,10 @@ export function WorkspaceShell() {
   const [simulationJob, setSimulationJob] = useState<SimulationJob | null>(null);
   const [showSimulationLog, setShowSimulationLog] = useState(false);
   const [simulationLog, setSimulationLog] = useState<SimulationLog | null>(null);
+  const [followingSimulationLog, setFollowingSimulationLog] = useState(true);
+  const [clearingSimulationLog, setClearingSimulationLog] = useState(false);
+  const stdoutLogRef = useRef<HTMLPreElement>(null);
+  const stderrLogRef = useRef<HTMLPreElement>(null);
 
   const reportSimulation = useCallback((job: SimulationJob | null) => {
     setSimulationJob(job);
@@ -50,8 +54,10 @@ export function WorkspaceShell() {
     }
   }, [project, selectedGeometryId]);
 
+  const simulationJobId = simulationJob?.id;
+  const simulationJobStatus = simulationJob?.status;
   useEffect(() => {
-    if (!showSimulationLog || !simulationJob) return;
+    if (!simulationJobId || !simulationJobStatus) return;
     let disposed = false;
     const refresh = () => {
       void getSimulationLog()
@@ -63,13 +69,23 @@ export function WorkspaceShell() {
         });
     };
     refresh();
-    const active = ["Starting", "Running", "Cancelling"].includes(simulationJob.status);
+    const active = ["Starting", "Running", "Cancelling"].includes(simulationJobStatus);
     const interval = active ? window.setInterval(refresh, 1000) : undefined;
     return () => {
       disposed = true;
       if (interval !== undefined) window.clearInterval(interval);
     };
-  }, [showSimulationLog, simulationJob]);
+  }, [simulationJobId, simulationJobStatus]);
+
+  useLayoutEffect(() => {
+    if (!showSimulationLog || !followingSimulationLog) return;
+    const frame = window.requestAnimationFrame(() => {
+      for (const element of [stdoutLogRef.current, stderrLogRef.current]) {
+        if (element) element.scrollTop = element.scrollHeight;
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [followingSimulationLog, showSimulationLog, simulationLog]);
 
   if (!project) return null;
   const projectId = project.id;
@@ -83,6 +99,29 @@ export function WorkspaceShell() {
     setStatus(isError ? (displayMessage.split(/\r?\n/, 1)[0] ?? displayMessage) : displayMessage);
     setStatusError(isError);
     if (isError) setErrorDialog(displayMessage);
+  }
+
+  function openSimulationLogs() {
+    setFollowingSimulationLog(true);
+    setShowSimulationLog(true);
+  }
+
+  function handleLogScroll(event: UIEvent<HTMLPreElement>) {
+    const element = event.currentTarget;
+    const atBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 24;
+    setFollowingSimulationLog(atBottom);
+  }
+
+  async function handleClearSimulationLog() {
+    setClearingSimulationLog(true);
+    try {
+      setSimulationLog(await clearSimulationLog());
+      setFollowingSimulationLog(true);
+    } catch (error) {
+      reportStatus(toUserMessage(error), true);
+    } finally {
+      setClearingSimulationLog(false);
+    }
   }
 
   function openGeometry(geometryId?: string) {
@@ -376,6 +415,7 @@ export function WorkspaceShell() {
           {activeCase ? (
             <CaseWorkspace
               simulationCase={activeCase}
+              simulationLog={simulationJob?.caseId === activeCase.id ? simulationLog : null}
               onStatus={reportStatus}
               onSimulationChange={reportSimulation}
               onCreateVariant={(caseId) => startNewCase(caseId)}
@@ -398,24 +438,48 @@ export function WorkspaceShell() {
         message={status}
         tone={statusError ? "error" : "neutral"}
         simulation={simulationJob}
-        onViewLogs={() => setShowSimulationLog(true)}
+        onViewLogs={openSimulationLogs}
       />
       {showSimulationLog && (
         <Modal title="OpenFOAM logs" onClose={() => setShowSimulationLog(false)}>
           <div className="modal__body simulation-log-viewer">
             <div className="simulation-log-viewer__heading">
-              <strong>{simulationJob?.stage ?? "Simulation"}</strong>
-              <span>{Math.round(simulationJob?.progress ?? 0)}%</span>
+              <div>
+                <strong>{simulationJob?.stage ?? "Simulation"}</strong>
+                <span>{Math.round(simulationJob?.progress ?? 0)}%</span>
+              </div>
+              <button
+                type="button"
+                className={followingSimulationLog ? "is-active" : ""}
+                onClick={() => setFollowingSimulationLog(true)}
+              >
+                {followingSimulationLog ? "Auto-scroll on" : "Resume auto-scroll"}
+              </button>
             </div>
-            <pre>{simulationLog?.stdout || "Waiting for OpenFOAM output…"}</pre>
+            <pre ref={stdoutLogRef} onScroll={handleLogScroll}>
+              {simulationLog?.stdout || "Waiting for OpenFOAM output…"}
+            </pre>
             {simulationLog?.stderr && (
               <>
                 <strong className="simulation-log-viewer__stderr-title">Errors and warnings</strong>
-                <pre className="simulation-log-viewer__stderr">{simulationLog.stderr}</pre>
+                <pre
+                  ref={stderrLogRef}
+                  className="simulation-log-viewer__stderr"
+                  onScroll={handleLogScroll}
+                >
+                  {simulationLog.stderr}
+                </pre>
               </>
             )}
           </div>
           <footer className="modal__actions">
+            <Button
+              variant="ghost"
+              onClick={() => void handleClearSimulationLog()}
+              disabled={clearingSimulationLog || !simulationJob}
+            >
+              {clearingSimulationLog ? "Clearing…" : "Clear logs"}
+            </Button>
             <Button variant="primary" onClick={() => setShowSimulationLog(false)}>
               Close
             </Button>

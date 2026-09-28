@@ -49,6 +49,8 @@ struct SimulationState {
     current: Option<SimulationJob>,
     stdout_path: Option<PathBuf>,
     stderr_path: Option<PathBuf>,
+    stdout_clear_offset: u64,
+    stderr_clear_offset: u64,
     stage_path: Option<PathBuf>,
     progress_target: f64,
     process_id: Option<u32>,
@@ -114,6 +116,8 @@ impl SimulationManager {
         state.current = Some(job.clone());
         state.stdout_path = Some(stdout_path.clone());
         state.stderr_path = Some(stderr_path.clone());
+        state.stdout_clear_offset = 0;
+        state.stderr_clear_offset = 0;
         state.stage_path = Some(stage_path);
         state.progress_target = progress_target;
         drop(state);
@@ -232,13 +236,36 @@ impl SimulationManager {
             stdout: state
                 .stdout_path
                 .as_deref()
-                .map(|path| read_log_tail(path, 96 * 1024))
+                .map(|path| read_log_tail_from(path, state.stdout_clear_offset, 96 * 1024))
                 .unwrap_or_default(),
             stderr: state
                 .stderr_path
                 .as_deref()
-                .map(|path| read_log_tail(path, 48 * 1024))
+                .map(|path| read_log_tail_from(path, state.stderr_clear_offset, 48 * 1024))
                 .unwrap_or_default(),
+        })
+    }
+
+    pub fn clear_logs(&self) -> AppResult<SimulationLog> {
+        let mut state = self.state.lock().map_err(lock_error)?;
+        if state.current.is_none() {
+            return Err(AppError::SimulationNotFound);
+        }
+        state.stdout_clear_offset = state
+            .stdout_path
+            .as_deref()
+            .and_then(|path| fs::metadata(path).ok())
+            .map(|metadata| metadata.len())
+            .unwrap_or_default();
+        state.stderr_clear_offset = state
+            .stderr_path
+            .as_deref()
+            .and_then(|path| fs::metadata(path).ok())
+            .map(|metadata| metadata.len())
+            .unwrap_or_default();
+        Ok(SimulationLog {
+            stdout: String::new(),
+            stderr: String::new(),
         })
     }
 
@@ -423,11 +450,16 @@ fn openfoam_failure_message(
 }
 
 fn read_log_tail(path: &Path, max_bytes: u64) -> String {
+    read_log_tail_from(path, 0, max_bytes)
+}
+
+fn read_log_tail_from(path: &Path, clear_offset: u64, max_bytes: u64) -> String {
     let Ok(mut file) = fs::File::open(path) else {
         return String::new();
     };
     let length = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
-    let start = length.saturating_sub(max_bytes);
+    let visible_start = clear_offset.min(length);
+    let start = visible_start.max(length.saturating_sub(max_bytes));
     if file.seek(SeekFrom::Start(start)).is_err() {
         return String::new();
     }
@@ -436,7 +468,7 @@ fn read_log_tail(path: &Path, max_bytes: u64) -> String {
         return String::new();
     }
     let text = String::from_utf8_lossy(&bytes);
-    if start == 0 {
+    if start == visible_start {
         text.into_owned()
     } else {
         text.split_once('\n')
@@ -559,5 +591,18 @@ mod tests {
         let control = directory.path().join("controlDict");
         fs::write(&control, "startTime 0;\nendTime 250;\ndeltaT 1;\n").unwrap();
         assert_eq!(read_end_time(&control), 250.0);
+    }
+
+    #[test]
+    fn log_clear_offset_hides_old_output_without_truncating_the_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let log = directory.path().join("stdout.log");
+        fs::write(&log, "old output\nnew output\n").unwrap();
+
+        assert_eq!(read_log_tail_from(&log, 11, 1024), "new output\n");
+        assert_eq!(
+            fs::read_to_string(&log).unwrap(),
+            "old output\nnew output\n"
+        );
     }
 }

@@ -18,7 +18,7 @@ import {
   validateCase,
 } from "../case.api";
 import { CfdSetupPanel } from "./CfdSetupPanel";
-import type { OpenFoamRuntimeStatus, SimulationJob } from "../case.types";
+import type { OpenFoamRuntimeStatus, SimulationJob, SimulationLog } from "../case.types";
 
 interface CaseWorkspaceProps {
   simulationCase: SimulationCase;
@@ -26,6 +26,7 @@ interface CaseWorkspaceProps {
   onStatus: (message: string, isError?: boolean) => void;
   onUpAxisChange: (upAxis: UpAxis) => void;
   onSimulationChange: (job: SimulationJob | null) => void;
+  simulationLog: SimulationLog | null;
 }
 
 export function CaseWorkspace({
@@ -34,6 +35,7 @@ export function CaseWorkspace({
   onStatus,
   onUpAxisChange,
   onSimulationChange,
+  simulationLog,
 }: CaseWorkspaceProps) {
   const { project, syncProject } = useWorkspace();
   const [busy, setBusy] = useState(false);
@@ -241,6 +243,7 @@ export function CaseWorkspace({
       onExport={handleExport}
       runtime={runtime}
       job={job}
+      simulationLog={simulationLog}
       onRun={handleRun}
       onCancel={handleCancel}
     />

@@ -150,6 +150,7 @@ pub fn run() {
             commands::solver::start_simulation,
             commands::solver::get_simulation_status,
             commands::solver::get_simulation_log,
+            commands::solver::clear_simulation_log,
             commands::solver::cancel_simulation,
         ])
         .run(tauri::generate_context!())

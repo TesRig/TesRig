@@ -70,6 +70,10 @@ export function getSimulationLog() {
   return invokeCommand<SimulationLog>("get_simulation_log");
 }
 
+export function clearSimulationLog() {
+  return invokeCommand<SimulationLog>("clear_simulation_log");
+}
+
 export function cancelSimulation() {
   return invokeCommand<SimulationJob>("cancel_simulation");
 }

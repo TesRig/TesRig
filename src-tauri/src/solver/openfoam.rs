@@ -7,6 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub const SUPPORTED_OPENFOAM_VERSION: &str = "14";
+const MAX_BACKGROUND_CELLS: u64 = 500_000;
+const MAX_BACKGROUND_AXIS_CELLS: u32 = 500;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -288,6 +290,22 @@ impl OpenFoamAdapter {
                     .to_owned(),
             );
         }
+        let mesh_plan = background_mesh_plan(&simulation_case.cfd_setup);
+        if mesh_plan.limited {
+            let cell_count = mesh_plan
+                .cells
+                .iter()
+                .map(|count| u64::from(*count))
+                .product::<u64>();
+            warnings.push(format!(
+                "The requested base cell size would exceed the safe background-mesh budget. TesRig used about {} m with {} x {} x {} cells ({} total) to prevent a blockMesh memory failure.",
+                num(mesh_plan.effective_cell_size),
+                mesh_plan.cells[0],
+                mesh_plan.cells[1],
+                mesh_plan.cells[2],
+                cell_count,
+            ));
+        }
         Ok(CaseValidation {
             valid: true,
             warnings,
@@ -383,7 +401,7 @@ fn control_dict(case: &SimulationCase) -> String {
         FlowRegime::Transient => (setup.run.end_time, setup.run.time_step),
     };
     format!(
-        "{}application simpleFoam;\nsolver incompressibleFluid;\nstartFrom startTime;\nstartTime 0;\nstopAt endTime;\nendTime {};\ndeltaT {};\nwriteControl runTime;\nwriteInterval {};\npurgeWrite 0;\nwriteFormat binary;\nwritePrecision 8;\nrunTimeModifiable true;\n",
+        "{}application simpleFoam;\nsolver incompressibleFluid;\nstartFrom startTime;\nstartTime 0;\nstopAt endTime;\nendTime {};\ndeltaT {};\nwriteControl runTime;\nwriteInterval {};\npurgeWrite 0;\nwriteFormat binary;\nwritePrecision 8;\nrunTimeModifiable true;\nfunctions\n{{\n    TesRigVelocityAverage\n    {{\n        type volFieldValue;\n        libs (fieldFunctionObjects);\n        log true;\n        writeControl timeStep;\n        writeInterval 1;\n        writeFields false;\n        regionType all;\n        cellZone all;\n        operation volAverage;\n        fields (U);\n    }}\n}}\n",
         header("dictionary", "system", "controlDict"),
         num(end_time),
         num(time_step),
@@ -410,6 +428,48 @@ fn fv_solution() -> String {
     )
 }
 
+#[derive(Debug, Clone, Copy)]
+struct BackgroundMeshPlan {
+    cells: [u32; 3],
+    effective_cell_size: f64,
+    limited: bool,
+}
+
+fn background_mesh_plan(setup: &CfdSetup) -> BackgroundMeshPlan {
+    let (min, max) = setup
+        .boundary_box
+        .as_ref()
+        .map(|domain| (domain.min, domain.max))
+        .unwrap_or_else(|| {
+            let padding = setup.mesh.domain_padding;
+            ([-padding; 3], [padding; 3])
+        });
+    let spans = [0, 1, 2].map(|axis| max[axis] - min[axis]);
+    let requested_cell_size = setup.mesh.base_cell_size;
+    let mut effective_cell_size = spans.iter().fold(requested_cell_size, |size, span| {
+        size.max(*span / f64::from(MAX_BACKGROUND_AXIS_CELLS))
+    });
+    let calculate_cells =
+        |cell_size: f64| spans.map(|span| ((span / cell_size).ceil() as u32).max(4));
+    let mut cells = calculate_cells(effective_cell_size);
+
+    for _ in 0..64 {
+        let cell_count = cells.iter().map(|count| u64::from(*count)).product::<u64>();
+        if cell_count <= MAX_BACKGROUND_CELLS {
+            break;
+        }
+        let scale = ((cell_count as f64 / MAX_BACKGROUND_CELLS as f64).cbrt() * 1.001).max(1.01);
+        effective_cell_size *= scale;
+        cells = calculate_cells(effective_cell_size);
+    }
+
+    BackgroundMeshPlan {
+        cells,
+        effective_cell_size,
+        limited: effective_cell_size > requested_cell_size * 1.000001,
+    }
+}
+
 fn block_mesh_dict(setup: &CfdSetup) -> String {
     let (min, max) = setup
         .boundary_box
@@ -419,11 +479,7 @@ fn block_mesh_dict(setup: &CfdSetup) -> String {
             let padding = setup.mesh.domain_padding;
             ([-padding; 3], [padding; 3])
         });
-    let cells = (0..3)
-        .map(|axis| {
-            (((max[axis] - min[axis]) / setup.mesh.base_cell_size).ceil() as u32).clamp(4, 500)
-        })
-        .collect::<Vec<_>>();
+    let cells = background_mesh_plan(setup).cells;
     let faces = [
         ("domain:xMin", "(0 4 7 3)"),
         ("domain:xMax", "(1 2 6 5)"),
@@ -965,6 +1021,10 @@ mod tests {
         assert!(fs::read_to_string(root.join("system/controlDict"))
             .unwrap()
             .contains("deltaT 1;"));
+        let control = fs::read_to_string(root.join("system/controlDict")).unwrap();
+        assert!(control.contains("type volFieldValue;"));
+        assert!(control.contains("operation volAverage;"));
+        assert!(control.contains("fields (U);"));
         assert!(fs::read_to_string(root.join("constant/physicalProperties"))
             .unwrap()
             .contains("nu 1.50000000e-5"));
@@ -1058,5 +1118,27 @@ mod tests {
         assert!(!snappy.contains("triSurfaceMesh"));
         assert!(snappy.contains("locationInMesh (5.2 2.6 1.8)"));
         assert!(!snappy.contains("domain:yMin"));
+    }
+
+    #[test]
+    fn background_mesh_uses_a_total_cell_budget() {
+        let mut setup = CfdSetup::default();
+        setup.mesh.base_cell_size = 0.1;
+        setup.boundary_box = Some(crate::domain::case::BoundaryBox {
+            min: [0.0, -32.26976148, -54.93187357],
+            max: [80.15027406, 84.10378665, 45.19595878],
+        });
+
+        let plan = background_mesh_plan(&setup);
+        let cell_count = plan
+            .cells
+            .iter()
+            .map(|count| u64::from(*count))
+            .product::<u64>();
+
+        assert!(plan.limited);
+        assert!(cell_count <= MAX_BACKGROUND_CELLS);
+        assert_ne!(plan.cells, [500, 500, 500]);
+        assert!(plan.effective_cell_size > setup.mesh.base_cell_size);
     }
 }

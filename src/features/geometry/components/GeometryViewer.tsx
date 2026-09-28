@@ -32,6 +32,22 @@ interface ModelTreeNode {
   children: ModelTreeNode[];
 }
 
+type BoundaryBoxAssessment = {
+  level: "recommended" | "warning" | "error";
+  message: string;
+};
+
+const boundaryBoxColors = {
+  recommended: 0x72cfff,
+  warning: 0xffb454,
+  error: 0xff6b6b,
+} as const;
+
+const UPSTREAM_LENGTHS = 3;
+const DOWNSTREAM_LENGTHS = 5;
+const CROSS_FLOW_LENGTHS = 3;
+const MIN_AXIS_REFERENCE_RATIO = 0.05;
+
 const surfaceMaterial = new THREE.MeshStandardMaterial({
   color: 0x72cfff,
   emissive: 0x0b2838,
@@ -55,7 +71,7 @@ function createDefaultBoundaryBox(
   velocity: [number, number, number],
 ): BoundaryBox {
   const size = bounds.getSize(new THREE.Vector3());
-  const length = Math.max(size.x, size.y, size.z, 1e-6);
+  const largestExtent = Math.max(size.x, size.y, size.z, 1e-6);
   const flowAxis = velocity.reduce(
     (largest, value, axis) => (Math.abs(value) > Math.abs(velocity[largest]) ? axis : largest),
     0,
@@ -64,16 +80,75 @@ function createDefaultBoundaryBox(
   const max = bounds.max.toArray() as [number, number, number];
 
   for (let axis = 0; axis < 3; axis += 1) {
+    // Size each direction from the body's extent on that axis. The old implementation
+    // used the largest extent for every face, which badly over-sized thin or slender parts.
+    const axisExtent = Math.max(size.getComponent(axis), largestExtent * MIN_AXIS_REFERENCE_RATIO);
     if (axis === flowAxis) {
       const positiveFlow = velocity[axis] >= 0;
-      min[axis] -= length * (positiveFlow ? 3 : 6);
-      max[axis] += length * (positiveFlow ? 6 : 3);
+      min[axis] -= axisExtent * (positiveFlow ? UPSTREAM_LENGTHS : DOWNSTREAM_LENGTHS);
+      max[axis] += axisExtent * (positiveFlow ? DOWNSTREAM_LENGTHS : UPSTREAM_LENGTHS);
     } else {
-      min[axis] -= length * 3;
-      max[axis] += length * 3;
+      min[axis] -= axisExtent * CROSS_FLOW_LENGTHS;
+      max[axis] += axisExtent * CROSS_FLOW_LENGTHS;
     }
   }
   return { min, max };
+}
+
+function assessBoundaryBox(
+  bounds: THREE.Box3,
+  box: BoundaryBox,
+  velocity: [number, number, number],
+): BoundaryBoxAssessment {
+  const recommended = createDefaultBoundaryBox(bounds, velocity);
+  const geometryMin = bounds.min.toArray();
+  const geometryMax = bounds.max.toArray();
+  const tolerance = Math.max(...bounds.getSize(new THREE.Vector3()).toArray(), 1) * 1e-6;
+
+  const containsGeometry = [0, 1, 2].every(
+    (axis) =>
+      box.min[axis] <= geometryMin[axis] + tolerance &&
+      box.max[axis] >= geometryMax[axis] - tolerance,
+  );
+  if (!containsGeometry) {
+    return {
+      level: "error",
+      message: "The boundary box does not fully contain the geometry. Reset it before meshing.",
+    };
+  }
+
+  let tooTight = false;
+  let oversized = false;
+  for (let axis = 0; axis < 3; axis += 1) {
+    const actualMargins = [geometryMin[axis] - box.min[axis], box.max[axis] - geometryMax[axis]];
+    const recommendedMargins = [
+      geometryMin[axis] - recommended.min[axis],
+      recommended.max[axis] - geometryMax[axis],
+    ];
+    for (let side = 0; side < 2; side += 1) {
+      tooTight ||= actualMargins[side] < recommendedMargins[side] * 0.65 - tolerance;
+      oversized ||= actualMargins[side] > recommendedMargins[side] * 1.5 + tolerance;
+    }
+  }
+
+  if (tooTight) {
+    return {
+      level: "error",
+      message:
+        "The boundary box is tighter than the recommended airflow clearance and may affect the result.",
+    };
+  }
+  if (oversized) {
+    return {
+      level: "warning",
+      message:
+        "The boundary box exceeds the recommended airflow region and will increase mesh memory and run time.",
+    };
+  }
+  return {
+    level: "recommended",
+    message: "Boundary box is within the recommended external-flow region.",
+  };
 }
 
 function brightenSourceColor(
@@ -210,6 +285,9 @@ export function GeometryViewer({
   const [message, setMessage] = useState("Loading geometry…");
   const [modelTree, setModelTree] = useState<ModelTreeNode | null>(null);
   const [editingBoundaryBox, setEditingBoundaryBox] = useState(false);
+  const [boundaryBoxAssessment, setBoundaryBoxAssessment] = useState<BoundaryBoxAssessment | null>(
+    null,
+  );
   const editingBoundaryBoxRef = useRef(editingBoundaryBox);
   editingBoundaryBoxRef.current = editingBoundaryBox;
 
@@ -457,8 +535,16 @@ export function GeometryViewer({
       if (!box || !rawModelBounds) {
         boundaryGroup.visible = false;
         domainSphere = null;
+        setBoundaryBoxAssessment(null);
         return;
       }
+      const assessment = assessBoundaryBox(rawModelBounds, box, flowVelocityRef.current);
+      const boundaryColor = boundaryBoxColors[assessment.level];
+      setBoundaryBoxAssessment(assessment);
+      (boundaryWire.material as THREE.LineBasicMaterial).color.setHex(boundaryColor);
+      boundaryFaceMeshes.forEach((mesh) => {
+        (mesh.material as THREE.MeshBasicMaterial).color.setHex(boundaryColor);
+      });
       const displayMin = new THREE.Vector3(...box.min).add(modelOffset);
       const displayMax = new THREE.Vector3(...box.max).add(modelOffset);
       const displayBounds = new THREE.Box3(displayMin, displayMax);
@@ -707,7 +793,7 @@ export function GeometryViewer({
   useEffect(() => {
     updateBoundaryBoxRef.current(boundaryBox ?? null);
     if (!boundaryBox) setEditingBoundaryBox(false);
-  }, [boundaryBox]);
+  }, [boundaryBox, flowVelocity]);
 
   function selectUpAxis(nextAxis: UpAxis) {
     if (nextAxis === upAxis) return;
@@ -757,23 +843,34 @@ export function GeometryViewer({
       {!message && (
         <div className="geometry-viewer__toolbar">
           {onBoundaryBoxChange && (
-            <button
-              className={`geometry-viewer__fit boundary-box-toggle ${editingBoundaryBox ? "is-active" : ""}`}
-              type="button"
-              onClick={() => {
-                if (boundaryBox) {
-                  setEditingBoundaryBox((editing) => !editing);
-                } else {
-                  createBoundaryBoxRef.current();
-                }
-              }}
-            >
-              {boundaryBox
-                ? editingBoundaryBox
-                  ? "Finish box"
-                  : "Edit boundary box"
-                : "Create boundary box"}
-            </button>
+            <>
+              <button
+                className={`geometry-viewer__fit boundary-box-toggle ${editingBoundaryBox ? "is-active" : ""}`}
+                type="button"
+                onClick={() => {
+                  if (boundaryBox) {
+                    setEditingBoundaryBox((editing) => !editing);
+                  } else {
+                    createBoundaryBoxRef.current();
+                  }
+                }}
+              >
+                {boundaryBox
+                  ? editingBoundaryBox
+                    ? "Finish box"
+                    : "Edit boundary box"
+                  : "Create boundary box"}
+              </button>
+              {boundaryBox && (
+                <button
+                  className="geometry-viewer__fit"
+                  type="button"
+                  onClick={() => createBoundaryBoxRef.current()}
+                >
+                  Reset recommended
+                </button>
+              )}
+            </>
           )}
           <div className="up-axis-control" aria-label="Up axis">
             <span>Up</span>
@@ -799,6 +896,20 @@ export function GeometryViewer({
           >
             Fit view
           </button>
+        </div>
+      )}
+      {boundaryBoxAssessment && boundaryBoxAssessment.level !== "recommended" && (
+        <div
+          className={`boundary-box-notice is-${boundaryBoxAssessment.level}`}
+          role="status"
+          aria-live="polite"
+        >
+          <strong>
+            {boundaryBoxAssessment.level === "warning"
+              ? "Large airflow domain"
+              : "Boundary box needs attention"}
+          </strong>
+          <span>{boundaryBoxAssessment.message}</span>
         </div>
       )}
       <div className="geometry-viewer__hint">
