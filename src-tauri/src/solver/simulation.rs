@@ -518,6 +518,11 @@ fn strip_ansi(value: &str) -> String {
 fn diagnostic_suggestion<'a>(stage: &str, context: &'a str) -> &'a str {
     if context.contains("openfoam 14 environment was not found") {
         "Install the OpenFOAM Foundation openfoam14 package in the configured WSL distribution, or set TESRIG_OPENFOAM_BASHRC to a compatible environment script."
+    } else if context.contains("no space left on device")
+        || context.contains("error in iostream")
+        || (context.contains("fatal io error") && context.contains("writelist"))
+    {
+        "OpenFOAM could not finish writing a result field. Free space on the Windows system drive and its temporary directory, then run the case again. TesRig will regenerate the case and retain only the 10 newest result times to prevent unbounded output growth."
     } else if context.contains("locationinmesh") {
         "Resize the boundary box so it fully surrounds the geometry and leaves open fluid space near a far corner."
     } else if context.contains("cannot find patchfield entry")
@@ -591,6 +596,16 @@ mod tests {
         let control = directory.path().join("controlDict");
         fs::write(&control, "startTime 0;\nendTime 250;\ndeltaT 1;\n").unwrap();
         assert_eq!(read_end_time(&control), 250.0);
+    }
+
+    #[test]
+    fn write_failure_reports_storage_guidance() {
+        let context = "foam fatal io error: error in iostream 193/phi for operation writelist";
+
+        let suggestion = diagnostic_suggestion("simpleFoam", context);
+
+        assert!(suggestion.contains("Free space"));
+        assert!(suggestion.contains("10 newest result times"));
     }
 
     #[test]

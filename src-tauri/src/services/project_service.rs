@@ -254,6 +254,7 @@ impl ProjectService {
                     .to_owned(),
             ));
         }
+        OpenFoamAdapter::generate(workspace.root(), simulation_case, Some(geometry))?;
         let case_root = workspace
             .root()
             .join("cases")

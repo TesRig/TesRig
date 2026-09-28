@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 pub const SUPPORTED_OPENFOAM_VERSION: &str = "14";
 const MAX_BACKGROUND_CELLS: u64 = 500_000;
 const MAX_BACKGROUND_AXIS_CELLS: u32 = 500;
+const MAX_STORED_WRITE_TIMES: u32 = 10;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -396,16 +397,37 @@ fn header(class: &str, location: &str, object: &str) -> String {
 
 fn control_dict(case: &SimulationCase) -> String {
     let setup = &case.cfd_setup;
-    let (end_time, time_step) = match setup.flow_regime {
-        FlowRegime::Steady => (setup.run.max_iterations as f64, 1.0),
-        FlowRegime::Transient => (setup.run.end_time, setup.run.time_step),
+    let (end_time, time_step, write_control, write_interval) = match setup.flow_regime {
+        FlowRegime::Steady => {
+            let requested_interval = setup.run.write_interval.round();
+            let recommended_interval =
+                (f64::from(setup.run.max_iterations) / f64::from(MAX_STORED_WRITE_TIMES)).ceil();
+            (
+                setup.run.max_iterations as f64,
+                1.0,
+                "timeStep",
+                if setup.run.write_interval < 1.0 {
+                    recommended_interval.max(1.0)
+                } else {
+                    requested_interval.max(1.0)
+                },
+            )
+        }
+        FlowRegime::Transient => (
+            setup.run.end_time,
+            setup.run.time_step,
+            "runTime",
+            setup.run.write_interval.max(setup.run.time_step),
+        ),
     };
     format!(
-        "{}application simpleFoam;\nsolver incompressibleFluid;\nstartFrom startTime;\nstartTime 0;\nstopAt endTime;\nendTime {};\ndeltaT {};\nwriteControl runTime;\nwriteInterval {};\npurgeWrite 0;\nwriteFormat binary;\nwritePrecision 8;\nrunTimeModifiable true;\nfunctions\n{{\n    TesRigVelocityAverage\n    {{\n        type volFieldValue;\n        libs (fieldFunctionObjects);\n        log true;\n        writeControl timeStep;\n        writeInterval 1;\n        writeFields false;\n        regionType all;\n        cellZone all;\n        operation volAverage;\n        fields (U);\n    }}\n}}\n",
+        "{}application simpleFoam;\nsolver incompressibleFluid;\nstartFrom startTime;\nstartTime 0;\nstopAt endTime;\nendTime {};\ndeltaT {};\nwriteControl {};\nwriteInterval {};\npurgeWrite {};\nwriteFormat binary;\nwritePrecision 8;\nrunTimeModifiable true;\nfunctions\n{{\n    TesRigVelocityAverage\n    {{\n        type volFieldValue;\n        libs (fieldFunctionObjects);\n        log true;\n        writeControl timeStep;\n        writeInterval 1;\n        writeFields false;\n        regionType all;\n        cellZone all;\n        operation volAverage;\n        fields (U);\n    }}\n}}\n",
         header("dictionary", "system", "controlDict"),
         num(end_time),
         num(time_step),
-        num(setup.run.write_interval)
+        write_control,
+        num(write_interval),
+        MAX_STORED_WRITE_TIMES,
     )
 }
 
@@ -1022,6 +1044,9 @@ mod tests {
             .unwrap()
             .contains("deltaT 1;"));
         let control = fs::read_to_string(root.join("system/controlDict")).unwrap();
+        assert!(control.contains("writeControl timeStep;"));
+        assert!(control.contains("writeInterval 100;"));
+        assert!(control.contains("purgeWrite 10;"));
         assert!(control.contains("type volFieldValue;"));
         assert!(control.contains("operation volAverage;"));
         assert!(control.contains("fields (U);"));
@@ -1041,6 +1066,25 @@ mod tests {
         assert!(fs::read_to_string(root.join("Allrun-windows.cmd"))
             .unwrap()
             .contains("simpleFoam"));
+    }
+
+    #[test]
+    fn transient_case_uses_runtime_output_interval() {
+        let mut case = SimulationCase::new(
+            "Transient".to_owned(),
+            String::new(),
+            crate::domain::case::SimulationType::Cfd,
+            crate::domain::case::Solver::OpenFOAM,
+            None,
+            None,
+        );
+        case.cfd_setup.flow_regime = FlowRegime::Transient;
+
+        let control = control_dict(&case);
+
+        assert!(control.contains("writeControl runTime;"));
+        assert!(control.contains("writeInterval 0.1;"));
+        assert!(control.contains("purgeWrite 10;"));
     }
 
     #[test]

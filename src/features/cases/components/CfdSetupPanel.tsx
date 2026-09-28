@@ -135,6 +135,10 @@ export function CfdSetupPanel({
     [setup.boundaryBox, setup.mesh.baseCellSize],
   );
   const taskActive = Boolean(job && ["Starting", "Running", "Cancelling"].includes(job.status));
+  const displayedWriteInterval =
+    setup.flowRegime === "Steady" && setup.run.writeInterval < 1
+      ? Math.max(1, Math.ceil(setup.run.maxIterations / 10))
+      : setup.run.writeInterval;
   const jobId = job?.id;
 
   useEffect(() => {
@@ -614,9 +618,14 @@ export function CfdSetupPanel({
                   )}
                   <div className="cfd-form__columns">
                     <NumericInput
-                      label="Write interval"
-                      value={setup.run.writeInterval}
-                      min={0}
+                      label={
+                        setup.flowRegime === "Steady"
+                          ? "Write every (iterations)"
+                          : "Write interval (s)"
+                      }
+                      value={displayedWriteInterval}
+                      min={setup.flowRegime === "Steady" ? 1 : setup.run.timeStep}
+                      step={setup.flowRegime === "Steady" ? 1 : undefined}
                       onChange={(value) => changeRun("writeInterval", value)}
                     />
                     <NumericInput
@@ -672,8 +681,8 @@ export function CfdSetupPanel({
                     </Button>
                   )}
                   <p className="cfd-panel__note">
-                    Results stay in the OpenFOAM case and can be opened through TesRig.foam in
-                    ParaView.
+                    TesRig retains the 10 newest result times to control disk use. The full solver
+                    history remains available in the log and chart.
                   </p>
                 </div>
               )}
