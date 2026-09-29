@@ -466,7 +466,6 @@ export function WorkspaceShell() {
               addProbeRequest={addProbeRequest}
               onProbeCountChange={setFlowProbeCount}
               processingScriptsOpen={showProcessingScripts}
-              onCloseProcessingScripts={() => setShowProcessingScripts(false)}
               onCreateVariant={(caseId) => startNewCase(caseId)}
               onUpAxisChange={handleUpAxisChange}
             />

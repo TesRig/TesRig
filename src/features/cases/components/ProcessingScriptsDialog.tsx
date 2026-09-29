@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { toUserMessage } from "../../../lib/errors/app-error";
 import {
   listProcessingResults,
@@ -36,7 +37,6 @@ interface ProcessingScriptsPanelProps {
   projectId: string;
   caseId: string;
   simulationActive: boolean;
-  onClose: () => void;
   onStatus: (message: string, isError?: boolean) => void;
 }
 
@@ -44,7 +44,6 @@ export function ProcessingScriptsPanel({
   projectId,
   caseId,
   simulationActive,
-  onClose,
   onStatus,
 }: ProcessingScriptsPanelProps) {
   const [scripts, setScripts] = useState<ProcessingScript[]>([]);
@@ -218,21 +217,33 @@ export function ProcessingScriptsPanel({
 
   const syntaxInvalid = validation?.valid === false;
   const hasUnsavedChanges = source !== lastSavedSource.current;
+  const editorPopup = view === "code" && !collapsed;
 
-  return (
+  const panel = (
     <section
-      className={`processing-scripts-popup ${collapsed ? "is-collapsed" : ""}`}
+      className={`processing-scripts-popup ${collapsed ? "is-collapsed" : ""} ${editorPopup ? "is-code-view" : ""}`}
       aria-label="Python processing scripts"
+      role={editorPopup ? "dialog" : undefined}
     >
       <header className="processing-scripts-popup__header">
-        <div>
-          <span>
-            {view === "results" ? "Python results · File based" : "Python API · Live checking"}
-          </span>
+        <div className="processing-scripts-popup__controls processing-scripts-popup__controls--leading">
+          <button
+            type="button"
+            onClick={() => setCollapsed((value) => !value)}
+            aria-label={collapsed ? "Expand Python scripts" : "Minimize Python scripts"}
+            title={collapsed ? "Expand Python scripts" : "Minimize Python scripts"}
+          >
+            {collapsed ? "›" : "‹"}
+          </button>
         </div>
-        <div className="processing-scripts-popup__controls">
-          {!collapsed ? (
-            <>
+        {!collapsed ? (
+          <>
+            <div className="processing-scripts-popup__title">
+              <span>
+                {view === "results" ? "Python results · File based" : "Python API · Live checking"}
+              </span>
+            </div>
+            <div className="processing-scripts-popup__controls">
               {view === "code" ? (
                 <button
                   type="button"
@@ -270,45 +281,35 @@ export function ProcessingScriptsPanel({
               >
                 Docs ↗
               </button>
-            </>
-          ) : null}
-          <button
-            type="button"
-            onClick={() => setCollapsed((value) => !value)}
-            aria-label={collapsed ? "Expand Python scripts" : "Minimize Python scripts"}
-            title={collapsed ? "Expand Python scripts" : "Minimize Python scripts"}
-          >
-            {collapsed ? "‹" : "›"}
-          </button>
-          {!collapsed ? (
-            <button type="button" onClick={onClose} aria-label="Close Python scripts" title="Close">
-              ×
-            </button>
-          ) : null}
-        </div>
+            </div>
+          </>
+        ) : null}
       </header>
       {!collapsed ? (
         view === "results" ? (
           <div className="processing-results">
-            <aside className="processing-scripts__list" aria-label="Processing result files">
-              {results.length > 0 ? (
-                results.map((result) => (
+            {results.length > 1 ? (
+              <div
+                className="processing-results__tabs"
+                role="tablist"
+                aria-label="Processing result files"
+              >
+                {results.map((result) => (
                   <button
                     key={result.fileName}
                     type="button"
+                    role="tab"
+                    aria-selected={selectedResultFile === result.fileName}
                     className={selectedResultFile === result.fileName ? "is-active" : ""}
                     onClick={() => setSelectedResultFile(result.fileName)}
+                    title={`${result.name} · ${result.kind} · ${new Date(result.updatedAt).toLocaleString()}`}
                   >
-                    <strong>{result.name}</strong>
-                    <small>
-                      {result.kind} · {new Date(result.updatedAt).toLocaleTimeString()}
-                    </small>
+                    <span>{result.name}</span>
+                    <small>{result.kind}</small>
                   </button>
-                ))
-              ) : (
-                <p className="processing-results__no-files">No result files yet.</p>
-              )}
-            </aside>
+                ))}
+              </div>
+            ) : null}
             <section className="processing-results__content" aria-live="polite">
               {resultLoading ? <p className="processing-result__empty">Loading result…</p> : null}
               {!resultLoading && selectedResult ? (
@@ -378,4 +379,6 @@ export function ProcessingScriptsPanel({
       ) : null}
     </section>
   );
+
+  return editorPopup ? createPortal(panel, document.body) : panel;
 }

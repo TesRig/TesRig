@@ -38,7 +38,6 @@ interface CaseWorkspaceProps {
   addProbeRequest: number;
   onProbeCountChange: (count: number) => void;
   processingScriptsOpen: boolean;
-  onCloseProcessingScripts: () => void;
 }
 
 export function CaseWorkspace({
@@ -51,7 +50,6 @@ export function CaseWorkspace({
   addProbeRequest,
   onProbeCountChange,
   processingScriptsOpen,
-  onCloseProcessingScripts,
 }: CaseWorkspaceProps) {
   const { project, syncProject } = useWorkspace();
   const [busy, setBusy] = useState(false);
@@ -284,6 +282,17 @@ export function CaseWorkspace({
     }
   }
 
+  const processingScriptsPanel =
+    processingScriptsOpen && project ? (
+      <ProcessingScriptsPanel
+        key={simulationCase.id}
+        projectId={project.id}
+        caseId={simulationCase.id}
+        simulationActive={simulationActive}
+        onStatus={onStatus}
+      />
+    ) : null;
+
   const setupPanel = (
     <CfdSetupPanel
       simulationCase={simulationCase}
@@ -295,20 +304,9 @@ export function CaseWorkspace({
       onAssignGeometry={handleAssign}
       onImportGeometry={handleImport}
       onCreateVariant={() => onCreateVariant(simulationCase.id)}
-      processingScripts={
-        processingScriptsOpen && project ? (
-          <ProcessingScriptsPanel
-            key={simulationCase.id}
-            projectId={project.id}
-            caseId={simulationCase.id}
-            simulationActive={simulationActive}
-            onStatus={onStatus}
-            onClose={onCloseProcessingScripts}
-          />
-        ) : null
-      }
       setup={setup}
       selectedSurface={geometry ? selectedSurface : null}
+      onSurfaceSelect={selectSurface}
       busy={busy || simulationActive}
       onChange={setSetup}
       onSave={handleSaveSetup}
@@ -337,6 +335,7 @@ export function CaseWorkspace({
             onUpAxisChange={onUpAxisChange}
             addProbeRequest={addProbeRequest}
             onProbeCountChange={onProbeCountChange}
+            leftPanel={processingScriptsPanel}
           >
             {setupPanel}
           </FlowResultsViewer>
@@ -350,6 +349,7 @@ export function CaseWorkspace({
             onUpAxisChange={onUpAxisChange}
             boundaryBox={setup.boundaryBox}
             flowVelocity={setup.initialConditions.velocity}
+            leftPanel={processingScriptsPanel}
             onBoundaryBoxChange={(boundaryBox) =>
               setSetup((current) => ({ ...current, boundaryBox }))
             }

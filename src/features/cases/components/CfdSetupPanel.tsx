@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "../../../components/common/Button";
 import type { GeometryAsset } from "../../projects/project.types";
 import type {
@@ -16,6 +16,7 @@ import { SimulationOutputChart } from "./SimulationOutputChart";
 interface CfdSetupPanelProps {
   setup: CfdSetup;
   selectedSurface: string | null;
+  onSurfaceSelect: (surface: string) => void;
   busy: boolean;
   onChange: (setup: CfdSetup) => void;
   onSave: () => void;
@@ -34,7 +35,6 @@ interface CfdSetupPanelProps {
   onAssignGeometry: () => void;
   onImportGeometry: () => void;
   onCreateVariant: () => void;
-  processingScripts?: ReactNode;
 }
 
 type Section = "case" | "flow" | "boundaries" | "mesh" | "run";
@@ -101,6 +101,7 @@ function NumericInput({
 export function CfdSetupPanel({
   setup,
   selectedSurface,
+  onSurfaceSelect,
   busy,
   onChange,
   onSave,
@@ -119,7 +120,6 @@ export function CfdSetupPanel({
   onAssignGeometry,
   onImportGeometry,
   onCreateVariant,
-  processingScripts,
 }: CfdSetupPanelProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [chartCollapsed, setChartCollapsed] = useState(false);
@@ -132,6 +132,7 @@ export function CfdSetupPanel({
   const selectedSurfaceBoundary = selectedSurface
     ? setup.boundaries.find(({ surface }) => surface === selectedSurface)
     : null;
+  const selectedSurfacePatch = selectedSurfaceBoundary?.surface ?? null;
   const backgroundMeshPlan = useMemo(
     () =>
       setup.boundaryBox
@@ -149,6 +150,10 @@ export function CfdSetupPanel({
   useEffect(() => {
     if (jobId) setChartCollapsed(false);
   }, [jobId]);
+
+  useEffect(() => {
+    if (selectedSurfacePatch) setActivePatch(selectedSurfacePatch);
+  }, [selectedSurfacePatch]);
 
   function changeFluid(key: keyof CfdSetup["fluid"], value: number) {
     onChange({ ...setup, fluid: { ...setup.fluid, [key]: value } });
@@ -451,7 +456,10 @@ export function CfdSetupPanel({
                           key={boundary.surface}
                           type="button"
                           className={activePatch === boundary.surface ? "is-active" : ""}
-                          onClick={() => setActivePatch(boundary.surface)}
+                          onClick={() => {
+                            setActivePatch(boundary.surface);
+                            onSurfaceSelect(boundary.surface);
+                          }}
                         >
                           <span>{boundaryBoxFaceLabels[boundary.surface] ?? boundary.surface}</span>
                           <small>{boundary.boundaryType}</small>
@@ -720,7 +728,6 @@ export function CfdSetupPanel({
           onToggleCollapsed={() => setChartCollapsed((value) => !value)}
         />
       )}
-      {processingScripts}
     </div>
   );
 }

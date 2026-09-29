@@ -38,6 +38,7 @@ interface FlowResultsViewerProps {
   onUpAxisChange: (upAxis: UpAxis) => void;
   addProbeRequest: number;
   onProbeCountChange: (count: number) => void;
+  leftPanel?: ReactNode;
   children?: ReactNode;
 }
 
@@ -63,6 +64,14 @@ interface SceneState {
 }
 
 const PROBE_COLORS = [0x64d8ff, 0xffb45c, 0x8be39b, 0xc69cff, 0xff7196, 0xf4df4e];
+const DOMAIN_FACES = [
+  { id: "domain:xMin", axis: 0, side: "min" },
+  { id: "domain:xMax", axis: 0, side: "max" },
+  { id: "domain:yMin", axis: 1, side: "min" },
+  { id: "domain:yMax", axis: 1, side: "max" },
+  { id: "domain:zMin", axis: 2, side: "min" },
+  { id: "domain:zMax", axis: 2, side: "max" },
+] as const;
 
 function createProbe(index: number, kind: ProbeKind = index === 0 ? "connections" : "line") {
   return {
@@ -91,31 +100,24 @@ function finiteVelocity(snapshot: FlowSnapshot | null, fallback: [number, number
   return vector.lengthSq() > 1e-12 ? vector : new THREE.Vector3(1, 0, 0);
 }
 
+function cardinalDirection(velocity: THREE.Vector3) {
+  const components = velocity.toArray().map(Math.abs);
+  const axis = components.indexOf(Math.max(...components));
+  const direction = new THREE.Vector3();
+  direction.setComponent(axis, velocity.getComponent(axis) < 0 ? -1 : 1);
+  return direction;
+}
+
 function connectionDirection(setup: CfdSetup) {
-  const inlets = setup.boundaries.filter(
+  const inlet = setup.boundaries.find(
     ({ boundaryType, surface }) => boundaryType === "Inlet" && surface.startsWith("domain:"),
   );
-  const outlets = setup.boundaries.filter(
-    ({ boundaryType, surface }) => boundaryType === "Outlet" && surface.startsWith("domain:"),
-  );
-  const inlet = inlets[0];
-  if (!inlet) return null;
+  if (!inlet) return cardinalDirection(new THREE.Vector3(...setup.initialConditions.velocity));
   const match = inlet.surface.match(/^domain:([xyz])(Min|Max)$/);
-  if (!match) return null;
+  if (!match) return cardinalDirection(new THREE.Vector3(...setup.initialConditions.velocity));
   const axis = { x: 0, y: 1, z: 2 }[match[1] as "x" | "y" | "z"];
-  const matchingOutlet = outlets.find(({ surface }) => surface.startsWith(`domain:${match[1]}`));
-  const outletSide = matchingOutlet?.surface.endsWith("Min") ? "Min" : "Max";
   const direction = new THREE.Vector3();
-  direction.setComponent(
-    axis,
-    matchingOutlet
-      ? match[2] === "Min" && outletSide === "Max"
-        ? 1
-        : -1
-      : match[2] === "Min"
-        ? 1
-        : -1,
-  );
+  direction.setComponent(axis, match[2] === "Min" ? 1 : -1);
   return direction;
 }
 
@@ -197,6 +199,48 @@ function addDomainBox(group: THREE.Group, bounds: THREE.Box3) {
   );
   wire.position.copy(center);
   group.add(wire);
+
+  DOMAIN_FACES.forEach((face) => {
+    const mesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(1, 1),
+      new THREE.MeshBasicMaterial({
+        color: 0x72cfff,
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.06,
+        depthWrite: false,
+      }),
+    );
+    mesh.userData.tesrigBoundaryFace = face.id;
+    mesh.position.copy(center);
+    mesh.position.setComponent(
+      face.axis,
+      face.side === "min" ? bounds.min.getComponent(face.axis) : bounds.max.getComponent(face.axis),
+    );
+    if (face.axis === 0) {
+      mesh.rotation.y = Math.PI / 2;
+      mesh.scale.set(size.z, size.y, 1);
+    } else if (face.axis === 1) {
+      mesh.rotation.x = Math.PI / 2;
+      mesh.scale.set(size.x, size.z, 1);
+    } else {
+      mesh.scale.set(size.x, size.y, 1);
+    }
+    mesh.renderOrder = 2;
+    group.add(mesh);
+  });
+}
+
+function setDomainSelection(group: THREE.Group, surface: string | null) {
+  group.traverse((object) => {
+    if (!(object instanceof THREE.Mesh) || typeof object.userData.tesrigBoundaryFace !== "string")
+      return;
+    const isSelected = object.userData.tesrigBoundaryFace === surface;
+    const material = object.material as THREE.MeshBasicMaterial;
+    material.color.setHex(0x72cfff);
+    material.opacity = isSelected ? 0.3 : 0;
+    object.renderOrder = isSelected ? 4 : 2;
+  });
 }
 
 function probeMetric(settings: ProbeSettings, bounds: THREE.Box3, flowAxis: number) {
@@ -369,9 +413,7 @@ function rebuildFlow(
     .filter(({ visible }) => visible)
     .forEach((settings, probeIndex) => {
       const direction = (
-        settings.kind === "connections"
-          ? (connectionDirection(setup) ?? sourceDirection)
-          : sourceDirection
+        settings.kind === "connections" ? connectionDirection(setup) : sourceDirection
       )
         .clone()
         .normalize()
@@ -413,8 +455,9 @@ function rebuildFlow(
         (modelUpstreamCoordinate - inletCoordinate) * flowSign,
         characteristic * 0.1,
       );
-      const bendStart = inletCoordinate + flowSign * inletToModel * 0.68;
-      const bendDistance = Math.max(inletToModel * 0.32, characteristic * 0.04);
+      const straightFraction = settings.kind === "connections" ? 0.9 : 0.68;
+      const bendStart = inletCoordinate + flowSign * inletToModel * straightFraction;
+      const bendDistance = Math.max(inletToModel * (1 - straightFraction), characteristic * 0.04);
       if (settings.kind === "slice") addSlice(state, settings, pathBounds);
 
       const curves: THREE.CatmullRomCurve3[] = [];
@@ -519,6 +562,7 @@ export function FlowResultsViewer({
   onUpAxisChange,
   addProbeRequest,
   onProbeCountChange,
+  leftPanel,
   children,
 }: FlowResultsViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -628,19 +672,44 @@ export function FlowResultsViewer({
 
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
-    const selectAtPointer = (event: MouseEvent) => {
+    const setPointer = (event: MouseEvent | PointerEvent) => {
       const rect = renderer.domElement.getBoundingClientRect();
       pointer.set(
         ((event.clientX - rect.left) / rect.width) * 2 - 1,
         -((event.clientY - rect.top) / rect.height) * 2 + 1,
       );
       raycaster.setFromCamera(pointer, camera);
+    };
+    const selectAtPointer = (event: MouseEvent) => {
+      setPointer(event);
       const hit = raycaster
         .intersectObjects(scene.children, true)
         .find(({ object }) => typeof object.userData.tesrigSurface === "string");
       if (hit) onSurfaceSelect(hit.object.userData.tesrigSurface as string);
     };
+    let pointerStart: { x: number; y: number } | null = null;
+    const rememberPointer = (event: PointerEvent) => {
+      pointerStart = { x: event.clientX, y: event.clientY };
+    };
+    const selectDomainFace = (event: PointerEvent) => {
+      if (
+        !pointerStart ||
+        Math.hypot(event.clientX - pointerStart.x, event.clientY - pointerStart.y) > 4
+      ) {
+        pointerStart = null;
+        return;
+      }
+      pointerStart = null;
+      if (!domainGroup.visible) return;
+      setPointer(event);
+      const hit = raycaster
+        .intersectObjects(domainGroup.children, true)
+        .find(({ object }) => typeof object.userData.tesrigBoundaryFace === "string");
+      if (hit) onSurfaceSelect(hit.object.userData.tesrigBoundaryFace as string);
+    };
     renderer.domElement.addEventListener("dblclick", selectAtPointer);
+    renderer.domElement.addEventListener("pointerdown", rememberPointer);
+    renderer.domElement.addEventListener("pointerup", selectDomainFace);
 
     void getGeometryData(projectId, geometry.id)
       .then(({ bytes }) => createGeometryModel(geometry, Uint8Array.from(bytes)))
@@ -670,6 +739,7 @@ export function FlowResultsViewer({
           new THREE.Vector3(...box.max).add(offset),
         );
         addDomainBox(domainGroup, displayDomain);
+        setDomainSelection(domainGroup, selectedSurface);
         const state: SceneState = {
           scene,
           model,
@@ -715,6 +785,8 @@ export function FlowResultsViewer({
       cancelAnimationFrame(frame);
       observer.disconnect();
       renderer.domElement.removeEventListener("dblclick", selectAtPointer);
+      renderer.domElement.removeEventListener("pointerdown", rememberPointer);
+      renderer.domElement.removeEventListener("pointerup", selectDomainFace);
       controls.dispose();
       viewHelper.dispose();
       disposeGroup(flowGroup);
@@ -751,7 +823,10 @@ export function FlowResultsViewer({
   }, [flowDirection, showPressure]);
 
   useEffect(() => {
-    if (sceneRef.current) setSurfaceSelection(sceneRef.current.model, selectedSurface);
+    if (sceneRef.current) {
+      setSurfaceSelection(sceneRef.current.model, selectedSurface);
+      setDomainSelection(sceneRef.current.domainGroup, selectedSurface);
+    }
   }, [selectedSurface]);
 
   const direction = settings.reverse ? "Outlet → inlet" : "Inlet → outlets";
@@ -782,229 +857,236 @@ export function FlowResultsViewer({
   return (
     <div className="geometry-viewer flow-results-viewer" ref={containerRef}>
       {message ? <div className="geometry-viewer__message">{message}</div> : null}
-      <aside className="flow-panel" aria-label="Airflow visualization controls">
-        <header>
-          <div>
-            <span>{isPreview ? "Live preview" : "Result field"}</span>
-            <strong>Airflow probes</strong>
-          </div>
-          <span className={`flow-panel__live ${snapshot ? "is-ready" : ""}`}>
-            {snapshot ? `t = ${snapshot.time.toPrecision(4)}` : "Initial field"}
-          </span>
-        </header>
-        <div className="flow-panel__body">
-          <div className="flow-probe-list" aria-label="Active airflow probes">
-            {probes.map((probe, index) => (
-              <div
-                key={probe.id}
-                className={`flow-probe-list__item ${probe.id === activeProbeId ? "is-active" : ""}`}
-              >
-                <button type="button" onClick={() => setActiveProbeId(probe.id)}>
-                  <i style={{ backgroundColor: `#${probe.color.toString(16).padStart(6, "0")}` }} />
-                  <span>Probe {index + 1}</span>
-                  <small>{PROBE_OPTIONS.find(({ id }) => id === probe.kind)?.label}</small>
-                </button>
-                <button
-                  type="button"
-                  className={probe.visible ? "is-visible" : ""}
-                  aria-label={`${probe.visible ? "Hide" : "Show"} probe ${index + 1}`}
-                  onClick={() =>
-                    setProbes((current) =>
-                      current.map((item) =>
-                        item.id === probe.id ? { ...item, visible: !item.visible } : item,
-                      ),
-                    )
-                  }
+      <div
+        className={`viewer-left-stack flow-viewer__left-stack ${leftPanel ? "has-secondary-panel" : ""}`}
+      >
+        <aside className="flow-panel" aria-label="Airflow visualization controls">
+          <header>
+            <div>
+              <span>{isPreview ? "Live preview" : "Result field"}</span>
+              <strong>Airflow probes</strong>
+            </div>
+            <span className={`flow-panel__live ${snapshot ? "is-ready" : ""}`}>
+              {snapshot ? `t = ${snapshot.time.toPrecision(4)}` : "Initial field"}
+            </span>
+          </header>
+          <div className="flow-panel__body">
+            <div className="flow-probe-list" aria-label="Active airflow probes">
+              {probes.map((probe, index) => (
+                <div
+                  key={probe.id}
+                  className={`flow-probe-list__item ${probe.id === activeProbeId ? "is-active" : ""}`}
                 >
-                  {probe.visible ? "●" : "○"}
-                </button>
-                <button
-                  type="button"
-                  aria-label={`Remove probe ${index + 1}`}
-                  disabled={probes.length === 1}
-                  onClick={() => {
-                    const remaining = probes.filter(({ id }) => id !== probe.id);
-                    setProbes(remaining);
-                    if (activeProbeId === probe.id) setActiveProbeId(remaining[0].id);
-                  }}
-                >
-                  ×
-                </button>
-              </div>
-            ))}
-            <button className="flow-probe-list__add" type="button" onClick={() => addProbe()}>
-              + Add probe
-            </button>
-          </div>
-          <label className="cfd-field">
-            <span>Visualization</span>
-            <select
-              value={settings.kind}
-              onChange={(event) =>
-                updateActiveProbe((current) => ({
-                  ...current,
-                  kind: event.target.value as ProbeKind,
-                }))
-              }
-            >
-              {PROBE_OPTIONS.map(({ id, label }) => (
-                <option key={id} value={id}>
-                  {label}
-                </option>
+                  <button type="button" onClick={() => setActiveProbeId(probe.id)}>
+                    <i
+                      style={{ backgroundColor: `#${probe.color.toString(16).padStart(6, "0")}` }}
+                    />
+                    <span>Probe {index + 1}</span>
+                    <small>{PROBE_OPTIONS.find(({ id }) => id === probe.kind)?.label}</small>
+                  </button>
+                  <button
+                    type="button"
+                    className={probe.visible ? "is-visible" : ""}
+                    aria-label={`${probe.visible ? "Hide" : "Show"} probe ${index + 1}`}
+                    onClick={() =>
+                      setProbes((current) =>
+                        current.map((item) =>
+                          item.id === probe.id ? { ...item, visible: !item.visible } : item,
+                        ),
+                      )
+                    }
+                  >
+                    {probe.visible ? "●" : "○"}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Remove probe ${index + 1}`}
+                    disabled={probes.length === 1}
+                    onClick={() => {
+                      const remaining = probes.filter(({ id }) => id !== probe.id);
+                      setProbes(remaining);
+                      if (activeProbeId === probe.id) setActiveProbeId(remaining[0].id);
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
               ))}
-            </select>
-          </label>
-          {settings.kind === "connections" ? (
-            <button
-              className="flow-direction-toggle"
-              type="button"
-              onClick={() =>
-                updateActiveProbe((current) => ({ ...current, reverse: !current.reverse }))
-              }
-            >
-              {direction}
-            </button>
-          ) : null}
-          {settings.kind !== "slice" ? (
-            <label className="flow-range">
-              <span>
-                Streamline density <strong>{settings.density.toFixed(1)}</strong>
-              </span>
-              <input
-                type="range"
-                min="0.2"
-                max="8"
-                step="0.2"
-                value={settings.density}
+              <button className="flow-probe-list__add" type="button" onClick={() => addProbe()}>
+                + Add probe
+              </button>
+            </div>
+            <label className="cfd-field">
+              <span>Visualization</span>
+              <select
+                value={settings.kind}
                 onChange={(event) =>
                   updateActiveProbe((current) => ({
                     ...current,
-                    density: event.target.valueAsNumber,
+                    kind: event.target.value as ProbeKind,
                   }))
                 }
-              />
-              <small>{settings.kind === "point" ? "lines / m³" : "lines / m²"}</small>
+              >
+                {PROBE_OPTIONS.map(({ id, label }) => (
+                  <option key={id} value={id}>
+                    {label}
+                  </option>
+                ))}
+              </select>
             </label>
-          ) : null}
-          {settings.kind === "point" ? (
-            <label className="flow-range">
-              <span>
-                Probe radius <strong>{settings.radius.toFixed(2)} m</strong>
-              </span>
-              <input
-                type="range"
-                min="0.02"
-                max="2"
-                step="0.02"
-                value={settings.radius}
-                onChange={(event) =>
-                  updateActiveProbe((current) => ({
-                    ...current,
-                    radius: event.target.valueAsNumber,
-                  }))
+            {settings.kind === "connections" ? (
+              <button
+                className="flow-direction-toggle"
+                type="button"
+                onClick={() =>
+                  updateActiveProbe((current) => ({ ...current, reverse: !current.reverse }))
                 }
-              />
-            </label>
-          ) : null}
-          {settings.kind === "surface" ? (
-            <>
-              <div className="flow-surface-selection">
-                <span>Selected surface</span>
-                <strong>{selectedSurface ?? "Double-click a model surface"}</strong>
-              </div>
+              >
+                {direction}
+              </button>
+            ) : null}
+            {settings.kind !== "slice" ? (
               <label className="flow-range">
                 <span>
-                  Normal distance <strong>{settings.normalDistance.toFixed(2)} m</strong>
+                  Streamline density <strong>{settings.density.toFixed(1)}</strong>
                 </span>
                 <input
                   type="range"
-                  min="0.01"
-                  max="1"
-                  step="0.01"
-                  value={settings.normalDistance}
+                  min="0.2"
+                  max="8"
+                  step="0.2"
+                  value={settings.density}
                   onChange={(event) =>
                     updateActiveProbe((current) => ({
                       ...current,
-                      normalDistance: event.target.valueAsNumber,
+                      density: event.target.valueAsNumber,
                     }))
                   }
                 />
+                <small>{settings.kind === "point" ? "lines / m³" : "lines / m²"}</small>
               </label>
-            </>
-          ) : null}
-          {settings.kind === "slice" ? (
-            <div className="flow-section-controls">
-              <label className="cfd-field">
-                <span>Section axis</span>
-                <select
-                  value={settings.sliceAxis}
-                  onChange={(event) =>
-                    updateActiveProbe((current) => ({
-                      ...current,
-                      sliceAxis: Number(event.target.value) as 0 | 1 | 2,
-                    }))
-                  }
-                >
-                  <option value="0">X</option>
-                  <option value="1">Y</option>
-                  <option value="2">Z</option>
-                </select>
-              </label>
-              <label className="cfd-field">
-                <span>Field</span>
-                <select
-                  value={settings.sliceField}
-                  onChange={(event) =>
-                    updateActiveProbe((current) => ({
-                      ...current,
-                      sliceField: event.target.value as SliceField,
-                    }))
-                  }
-                >
-                  <option value="pressure">Pressure</option>
-                  <option value="velocity">Velocity</option>
-                </select>
-              </label>
-              <label className="flow-range flow-section-position">
-                <span>Section position</span>
+            ) : null}
+            {settings.kind === "point" ? (
+              <label className="flow-range">
+                <span>
+                  Probe radius <strong>{settings.radius.toFixed(2)} m</strong>
+                </span>
                 <input
                   type="range"
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  value={settings.slicePosition}
+                  min="0.02"
+                  max="2"
+                  step="0.02"
+                  value={settings.radius}
                   onChange={(event) =>
                     updateActiveProbe((current) => ({
                       ...current,
-                      slicePosition: event.target.valueAsNumber,
+                      radius: event.target.valueAsNumber,
                     }))
                   }
                 />
               </label>
-            </div>
-          ) : null}
-          <dl className="flow-statistics">
-            <div>
-              <dt>Mean speed</dt>
-              <dd>{displayNumber(velocity, "m/s")}</dd>
-            </div>
-            <div>
-              <dt>Mean pressure</dt>
-              <dd>{displayNumber(pressure, "Pa")}</dd>
-            </div>
-            <div>
-              <dt>Samples</dt>
-              <dd>{snapshot?.sampleCount.toLocaleString() ?? "Initial"}</dd>
-            </div>
-            <div>
-              <dt>Streamlines</dt>
-              <dd>
-                {displayedStreamlines} @ {settings.density.toFixed(1)}/{densityUnit}
-              </dd>
-            </div>
-          </dl>
-        </div>
-      </aside>
+            ) : null}
+            {settings.kind === "surface" ? (
+              <>
+                <div className="flow-surface-selection">
+                  <span>Selected surface</span>
+                  <strong>{selectedSurface ?? "Double-click a model surface"}</strong>
+                </div>
+                <label className="flow-range">
+                  <span>
+                    Normal distance <strong>{settings.normalDistance.toFixed(2)} m</strong>
+                  </span>
+                  <input
+                    type="range"
+                    min="0.01"
+                    max="1"
+                    step="0.01"
+                    value={settings.normalDistance}
+                    onChange={(event) =>
+                      updateActiveProbe((current) => ({
+                        ...current,
+                        normalDistance: event.target.valueAsNumber,
+                      }))
+                    }
+                  />
+                </label>
+              </>
+            ) : null}
+            {settings.kind === "slice" ? (
+              <div className="flow-section-controls">
+                <label className="cfd-field">
+                  <span>Section axis</span>
+                  <select
+                    value={settings.sliceAxis}
+                    onChange={(event) =>
+                      updateActiveProbe((current) => ({
+                        ...current,
+                        sliceAxis: Number(event.target.value) as 0 | 1 | 2,
+                      }))
+                    }
+                  >
+                    <option value="0">X</option>
+                    <option value="1">Y</option>
+                    <option value="2">Z</option>
+                  </select>
+                </label>
+                <label className="cfd-field">
+                  <span>Field</span>
+                  <select
+                    value={settings.sliceField}
+                    onChange={(event) =>
+                      updateActiveProbe((current) => ({
+                        ...current,
+                        sliceField: event.target.value as SliceField,
+                      }))
+                    }
+                  >
+                    <option value="pressure">Pressure</option>
+                    <option value="velocity">Velocity</option>
+                  </select>
+                </label>
+                <label className="flow-range flow-section-position">
+                  <span>Section position</span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={settings.slicePosition}
+                    onChange={(event) =>
+                      updateActiveProbe((current) => ({
+                        ...current,
+                        slicePosition: event.target.valueAsNumber,
+                      }))
+                    }
+                  />
+                </label>
+              </div>
+            ) : null}
+            <dl className="flow-statistics">
+              <div>
+                <dt>Mean speed</dt>
+                <dd>{displayNumber(velocity, "m/s")}</dd>
+              </div>
+              <div>
+                <dt>Mean pressure</dt>
+                <dd>{displayNumber(pressure, "Pa")}</dd>
+              </div>
+              <div>
+                <dt>Samples</dt>
+                <dd>{snapshot?.sampleCount.toLocaleString() ?? "Initial"}</dd>
+              </div>
+              <div>
+                <dt>Streamlines</dt>
+                <dd>
+                  {displayedStreamlines} @ {settings.density.toFixed(1)}/{densityUnit}
+                </dd>
+              </div>
+            </dl>
+          </div>
+        </aside>
+        {leftPanel}
+      </div>
       <div className="geometry-viewer__toolbar flow-viewer__toolbar">
         <button
           type="button"
@@ -1052,7 +1134,8 @@ export function FlowResultsViewer({
         </div>
       ) : null}
       <div className="geometry-viewer__hint">
-        Orbit · left drag · Pan · right drag · Zoom · wheel · Select surface · double-click
+        Orbit · left drag · Pan · right drag · Zoom · wheel · Select bounding face · click · Select
+        model surface · double-click
       </div>
       {children}
     </div>

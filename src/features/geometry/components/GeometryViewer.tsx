@@ -20,6 +20,7 @@ interface GeometryViewerProps {
   boundaryBox?: BoundaryBox | null;
   flowVelocity?: [number, number, number];
   onBoundaryBoxChange?: (boundaryBox: BoundaryBox) => void;
+  leftPanel?: ReactNode;
   children?: ReactNode;
 }
 
@@ -218,6 +219,7 @@ export function GeometryViewer({
   boundaryBox,
   flowVelocity = [1, 0, 0],
   onBoundaryBoxChange,
+  leftPanel,
   children,
 }: GeometryViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -305,8 +307,17 @@ export function GeometryViewer({
         materials.forEach((material) => {
           if (material instanceof THREE.MeshStandardMaterial) {
             material.emissiveIntensity = object.userData.tesrigSurface === surface ? 1.65 : 0.75;
-          } else if (material instanceof THREE.MeshBasicMaterial) {
-            material.opacity = object.userData.tesrigBoundaryFace === surface ? 0.26 : 0.08;
+          } else if (
+            material instanceof THREE.MeshBasicMaterial &&
+            typeof object.userData.tesrigBoundaryFace === "string"
+          ) {
+            const isSelected = object.userData.tesrigBoundaryFace === surface;
+            const baseColor = object.userData.tesrigBoundaryBaseColor;
+            material.color.setHex(
+              isSelected ? 0xffb454 : typeof baseColor === "number" ? baseColor : 0x72cfff,
+            );
+            material.opacity = isSelected ? 0.42 : 0.08;
+            object.renderOrder = isSelected ? 4 : 2;
           }
         });
       });
@@ -503,6 +514,7 @@ export function GeometryViewer({
       setBoundaryBoxAssessment(assessment);
       (boundaryWire.material as THREE.LineBasicMaterial).color.setHex(boundaryColor);
       boundaryFaceMeshes.forEach((mesh) => {
+        mesh.userData.tesrigBoundaryBaseColor = boundaryColor;
         (mesh.material as THREE.MeshBasicMaterial).color.setHex(boundaryColor);
       });
       const displayMin = new THREE.Vector3(...box.min).add(modelOffset);
@@ -764,43 +776,48 @@ export function GeometryViewer({
 
   return (
     <div className="geometry-viewer" ref={containerRef}>
-      <aside className="model-tree" aria-label="Geometry structure">
-        {geometries && geometries.length > 1 ? (
-          <label className="model-tree__geometry-select">
-            <span>Geometry</span>
-            <select
-              value={geometry.id}
-              onChange={(event) => {
-                setMessage("Loading geometry…");
-                setModelTree(null);
-                onGeometryChange?.(event.target.value);
-              }}
-            >
-              {geometries.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                </option>
-              ))}
-            </select>
-          </label>
-        ) : (
-          <div className="model-tree__title">
-            <span>{geometry.name}</span>
-            <small>{geometry.format}</small>
-          </div>
-        )}
-        <div className="model-tree__content">
-          {modelTree ? (
-            <ModelTreeBranch
-              node={modelTree}
-              selectedSurface={selectedSurface}
-              onSurfaceSelect={onSurfaceSelect}
-            />
+      <div
+        className={`viewer-left-stack geometry-viewer__left-stack ${leftPanel ? "has-secondary-panel" : ""}`}
+      >
+        <aside className="model-tree" aria-label="Geometry structure">
+          {geometries && geometries.length > 1 ? (
+            <label className="model-tree__geometry-select">
+              <span>Geometry</span>
+              <select
+                value={geometry.id}
+                onChange={(event) => {
+                  setMessage("Loading geometry…");
+                  setModelTree(null);
+                  onGeometryChange?.(event.target.value);
+                }}
+              >
+                {geometries.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name}
+                  </option>
+                ))}
+              </select>
+            </label>
           ) : (
-            <span>Reading structure…</span>
+            <div className="model-tree__title">
+              <span>{geometry.name}</span>
+              <small>{geometry.format}</small>
+            </div>
           )}
-        </div>
-      </aside>
+          <div className="model-tree__content">
+            {modelTree ? (
+              <ModelTreeBranch
+                node={modelTree}
+                selectedSurface={selectedSurface}
+                onSurfaceSelect={onSurfaceSelect}
+              />
+            ) : (
+              <span>Reading structure…</span>
+            )}
+          </div>
+        </aside>
+        {leftPanel}
+      </div>
       {message && <div className="geometry-viewer__message">{message}</div>}
       {!message && (
         <div className="geometry-viewer__toolbar">
