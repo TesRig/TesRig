@@ -103,6 +103,62 @@ export interface SimulationLog {
   stderr: string;
 }
 
+export interface FieldStatistics {
+  minimum: number;
+  maximum: number;
+  mean: number;
+}
+
+export interface FlowSnapshot {
+  time: number;
+  velocityMean: [number, number, number];
+  velocityMagnitude: FieldStatistics;
+  pressure: FieldStatistics | null;
+  sampleCount: number;
+  source: "reconstructed" | "processor0";
+}
+
+export interface ProcessingScript {
+  name: string;
+  source: string;
+  updatedAt: string;
+}
+
+export interface ProcessingScriptRun {
+  name: string;
+  success: boolean;
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+export interface ProcessingResultSummary {
+  fileName: string;
+  name: string;
+  kind: string;
+  updatedAt: string;
+}
+
+export interface ProcessingResult extends ProcessingResultSummary {
+  schemaVersion: number;
+  metadata: unknown;
+  data: unknown;
+}
+
+export interface ProcessingScriptDiagnostic {
+  line: number;
+  column: number;
+  endLine: number | null;
+  endColumn: number | null;
+  message: string;
+  severity: "error" | "warning";
+}
+
+export interface ProcessingScriptValidation {
+  valid: boolean;
+  diagnostics: ProcessingScriptDiagnostic[];
+}
+
 export interface CreateCaseInput {
   projectId: string;
   name: string;

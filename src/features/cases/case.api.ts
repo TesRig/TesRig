@@ -4,8 +4,14 @@ import { open } from "@tauri-apps/plugin-dialog";
 import type {
   CfdSetup,
   CaseValidation,
+  FlowSnapshot,
   CreateCaseInput,
   OpenFoamRuntimeStatus,
+  ProcessingScript,
+  ProcessingScriptRun,
+  ProcessingScriptValidation,
+  ProcessingResult,
+  ProcessingResultSummary,
   SimulationJob,
   SimulationLog,
   SimulationCase,
@@ -70,10 +76,72 @@ export function getSimulationLog() {
   return invokeCommand<SimulationLog>("get_simulation_log");
 }
 
+export function getFlowSnapshot() {
+  return invokeCommand<FlowSnapshot | null>("get_flow_snapshot");
+}
+
 export function clearSimulationLog() {
   return invokeCommand<SimulationLog>("clear_simulation_log");
 }
 
 export function cancelSimulation() {
   return invokeCommand<SimulationJob>("cancel_simulation");
+}
+
+export function listProcessingScripts(projectId: string, caseId: string) {
+  return invokeCommand<ProcessingScript[], { projectId: string; caseId: string }>(
+    "list_processing_scripts",
+    { projectId, caseId },
+  );
+}
+
+export function listProcessingResults(projectId: string, caseId: string) {
+  return invokeCommand<ProcessingResultSummary[], { projectId: string; caseId: string }>(
+    "list_processing_results",
+    { projectId, caseId },
+  );
+}
+
+export function readProcessingResult(projectId: string, caseId: string, fileName: string) {
+  return invokeCommand<ProcessingResult, { projectId: string; caseId: string; fileName: string }>(
+    "read_processing_result",
+    { projectId, caseId, fileName },
+  );
+}
+
+export function saveProcessingScript(
+  projectId: string,
+  caseId: string,
+  name: string,
+  source: string,
+) {
+  return invokeCommand<
+    ProcessingScript,
+    { projectId: string; caseId: string; name: string; source: string }
+  >("save_processing_script", { projectId, caseId, name, source });
+}
+
+export function deleteProcessingScript(projectId: string, caseId: string, name: string) {
+  return invokeCommand<void, { projectId: string; caseId: string; name: string }>(
+    "delete_processing_script",
+    { projectId, caseId, name },
+  );
+}
+
+export function runProcessingScript(projectId: string, caseId: string, name: string) {
+  return invokeCommand<ProcessingScriptRun, { projectId: string; caseId: string; name: string }>(
+    "run_processing_script",
+    { projectId, caseId, name },
+  );
+}
+
+export function validateProcessingScript(source: string) {
+  return invokeCommand<ProcessingScriptValidation, { source: string }>(
+    "validate_processing_script",
+    { source },
+  );
+}
+
+export function openPythonApiDocs() {
+  return invokeCommand<void>("open_python_api_docs");
 }

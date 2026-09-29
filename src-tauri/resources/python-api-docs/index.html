@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TesRig Python API</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Inter, "Segoe UI", sans-serif;
+        background: #0b1014;
+        color: #dce8ee;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        line-height: 1.6;
+      }
+      a {
+        color: #72cfff;
+      }
+      aside {
+        position: fixed;
+        inset: 0 auto 0 0;
+        width: 250px;
+        padding: 28px 22px;
+        border-right: 1px solid #263039;
+        background: #0e1419;
+        overflow: auto;
+      }
+      aside strong {
+        display: block;
+        color: #72cfff;
+        font-size: 13px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      aside small {
+        color: #778792;
+      }
+      nav {
+        display: grid;
+        margin-top: 28px;
+        gap: 7px;
+      }
+      nav a {
+        padding: 5px 8px;
+        border-radius: 4px;
+        color: #9eb0bb;
+        text-decoration: none;
+      }
+      nav a:hover {
+        background: #172128;
+        color: #fff;
+      }
+      main {
+        width: min(900px, calc(100% - 310px));
+        margin-left: 280px;
+        padding: 48px 0 100px;
+      }
+      h1 {
+        margin: 0;
+        font-size: 34px;
+      }
+      h2 {
+        margin-top: 52px;
+        padding-top: 12px;
+        border-top: 1px solid #263039;
+      }
+      h3 {
+        margin-top: 30px;
+        color: #bceaff;
+      }
+      p,
+      li {
+        color: #aebdc5;
+      }
+      .lead {
+        max-width: 700px;
+        font-size: 18px;
+      }
+      .badge {
+        display: inline-block;
+        margin-bottom: 12px;
+        padding: 3px 8px;
+        border: 1px solid #31566a;
+        border-radius: 999px;
+        color: #8fdbff;
+        font:
+          11px Consolas,
+          monospace;
+      }
+      code {
+        color: #b8d982;
+        font-family: Consolas, "Courier New", monospace;
+      }
+      pre {
+        padding: 16px;
+        border: 1px solid #27343d;
+        border-radius: 6px;
+        background: #070b0e;
+        color: #d9e8ef;
+        overflow: auto;
+      }
+      pre code {
+        color: inherit;
+      }
+      .call {
+        margin: 14px 0;
+        padding: 14px 16px;
+        border-left: 3px solid #72cfff;
+        background: #101820;
+      }
+      .call > code {
+        display: block;
+        color: #72cfff;
+        font-size: 14px;
+        font-weight: 700;
+      }
+      .note {
+        padding: 12px 15px;
+        border: 1px solid #5e4d2c;
+        background: #201a10;
+        color: #e7ca91;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      th,
+      td {
+        padding: 9px 10px;
+        border-bottom: 1px solid #263039;
+        text-align: left;
+        vertical-align: top;
+      }
+      th {
+        color: #eef7fa;
+      }
+      @media (max-width: 760px) {
+        aside {
+          position: static;
+          width: auto;
+        }
+        main {
+          width: auto;
+          margin: 0;
+          padding: 28px 20px 80px;
+        }
+        nav {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <aside>
+      <strong>TesRig Python API</strong>
+      <small>Bundled reference · API 1.0</small>
+      <nav>
+        <a href="#start">Quick start</a>
+        <a href="#case">Case and times</a>
+        <a href="#fields">Reading fields</a>
+        <a href="#math">Flow helpers</a>
+        <a href="#results">Writing results</a>
+        <a href="#examples">Examples</a>
+        <a href="#execution">Execution model</a>
+      </nav>
+    </aside>
+    <main>
+      <span class="badge">tesrig_api · dependency-free</span>
+      <h1>Process OpenFOAM results with Python</h1>
+      <p class="lead">
+        TesRig supplies the interpreter, case context, field readers, airflow helpers, and versioned
+        result writers. Import only what your script needs.
+      </p>
+
+      <h2 id="start">Quick start</h2>
+      <pre><code>from tesrig_api import latest_snapshot, write_result
+
+snapshot = latest_snapshot()
+write_result("summary", {
+    "time": snapshot["time"],
+    "mean_speed": snapshot["velocity_magnitude"]["mean"],
+    "mean_pressure": snapshot["pressure_statistics"]["mean"],
+})</code></pre>
+      <p>
+        Scripts are stored with the simulation case. Valid edits are autosaved, and the Run action
+        executes them using TesRig's packaged Python runtime.
+      </p>
+
+      <h2 id="case">Case and result times</h2>
+      <div class="call">
+        <code>case_directory() -&gt; pathlib.Path</code
+        ><span>Absolute path to the current OpenFOAM case.</span>
+      </div>
+      <div class="call">
+        <code>time_directories() -&gt; list[tuple[float, Path]]</code
+        ><span>Numeric result directories in ascending order.</span>
+      </div>
+      <div class="call">
+        <code>latest_time() -&gt; tuple[float, Path]</code
+        ><span>The newest available result time and directory.</span>
+      </div>
+      <div class="call">
+        <code>available_fields(time=None) -&gt; list[str]</code
+        ><span>Field files available for a selected or latest time.</span>
+      </div>
+
+      <h2 id="fields">Reading fields</h2>
+      <div class="call">
+        <code>read_field(field, time=None, limit=None) -&gt; list</code
+        ><span
+          >Read an ASCII scalar or vector <code>internalField</code>.
+          <code>read_internal_field</code> is the explicit alias.</span
+        >
+      </div>
+      <div class="call">
+        <code>latest_snapshot(limit=10000) -&gt; dict</code
+        ><span>Read sampled velocity and pressure plus speed and pressure statistics.</span>
+      </div>
+      <pre><code>from tesrig_api import available_fields, latest_time, read_field
+
+time, _ = latest_time()
+print(available_fields(time))
+velocity = read_field("U", time, limit=5000)
+pressure = read_field("p", time, limit=5000)</code></pre>
+      <p class="note">
+        The built-in reader supports OpenFOAM ASCII uniform and nonuniform scalar/vector internal
+        fields. Binary field decoding and OpenFOAM post-processing functions are intentionally
+        outside API 1.0.
+      </p>
+
+      <h2 id="math">Flow helpers</h2>
+      <div class="call">
+        <code>vector_magnitude(value) -&gt; float</code
+        ><span>Euclidean magnitude for a vector iterable.</span>
+      </div>
+      <div class="call">
+        <code>field_statistics(values) -&gt; dict</code
+        ><span>Minimum, maximum, and arithmetic mean.</span>
+      </div>
+      <div class="call">
+        <code>sample_every(values, step, limit=None) -&gt; list</code
+        ><span>Uniformly thin a large field before writing output.</span>
+      </div>
+      <div class="call">
+        <code>dynamic_pressure(speed, density=1.225) -&gt; float</code
+        ><span>Dynamic pressure in Pa.</span>
+      </div>
+      <div class="call">
+        <code
+          >pressure_coefficient(pressure, reference_pressure, speed, density=1.225) -&gt;
+          float</code
+        ><span>Dimensionless pressure coefficient Cp.</span>
+      </div>
+
+      <h2 id="results">Writing results</h2>
+      <div class="call">
+        <code>write_result(name, data, *, kind="data", metadata=None) -&gt; Path</code
+        ><span>Write any JSON-compatible value in TesRig's versioned result envelope.</span>
+      </div>
+      <div class="call">
+        <code>write_probe(name, points, values, *, units="", metadata=None) -&gt; Path</code
+        ><span>Write points and scalar/vector samples as a probe result.</span>
+      </div>
+      <div class="call">
+        <code>write_table(name, columns, *, units=None, metadata=None) -&gt; Path</code
+        ><span>Write equal-length named columns as a table result.</span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Output</th>
+            <th>Location</th>
+            <th>Kind</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>write_result</code></td>
+            <td><code>tesrig-processing/results/&lt;name&gt;.json</code></td>
+            <td>Custom</td>
+          </tr>
+          <tr>
+            <td><code>write_probe</code></td>
+            <td>Same results directory</td>
+            <td><code>probe</code></td>
+          </tr>
+          <tr>
+            <td><code>write_table</code></td>
+            <td>Same results directory</td>
+            <td><code>table</code></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2 id="examples">Examples</h2>
+      <h3>Pressure coefficient table</h3>
+      <pre><code>from tesrig_api import read_field, pressure_coefficient, write_table
+
+pressure = read_field("p", limit=2000)
+cp = [pressure_coefficient(value, 0.0, speed=10.0) for value in pressure]
+write_table("pressure_coefficient", {
+    "sample": range(len(cp)),
+    "pressure": pressure,
+    "cp": cp,
+}, units={"pressure": "Pa", "cp": "1"})</code></pre>
+      <h3>Sampled velocity probe</h3>
+      <pre><code>from tesrig_api import read_field, sample_every, write_probe
+
+velocity = sample_every(read_field("U"), step=10, limit=500)
+points = [[index, 0.0, 0.0] for index in range(len(velocity))]
+write_probe("sampled_velocity", points, velocity, units="m/s")</code></pre>
+
+      <h2 id="execution">Execution model</h2>
+      <ul>
+        <li>Syntax checking uses Python's AST parser and never executes the script.</li>
+        <li>
+          Run uses the Python runtime packaged with TesRig; a system Python installation is not
+          required.
+        </li>
+        <li><code>TESRIG_CASE_DIR</code> is assigned by TesRig for each run.</li>
+        <li>The API is dependency-free. Third-party packages are not bundled in API 1.0.</li>
+        <li>Scripts run with the user's permissions and should be treated as executable code.</li>
+      </ul>
+    </main>
+  </body>
+</html>

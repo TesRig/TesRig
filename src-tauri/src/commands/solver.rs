@@ -1,6 +1,6 @@
 use crate::error::{AppError, AppResult};
 use crate::solver::runtime::RuntimeStatus;
-use crate::solver::simulation::{SimulationJob, SimulationLog};
+use crate::solver::simulation::{FlowSnapshot, SimulationJob, SimulationLog};
 use crate::AppState;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -54,6 +54,14 @@ pub fn get_simulation_status(state: State<'_, AppState>) -> AppResult<Option<Sim
 #[tauri::command]
 pub fn get_simulation_log(state: State<'_, AppState>) -> AppResult<SimulationLog> {
     state.simulation_manager.logs()
+}
+
+#[tauri::command]
+pub async fn get_flow_snapshot(state: State<'_, AppState>) -> AppResult<Option<FlowSnapshot>> {
+    let simulation_manager = state.simulation_manager.clone();
+    tauri::async_runtime::spawn_blocking(move || simulation_manager.flow_snapshot())
+        .await
+        .map_err(|error| AppError::InternalError(format!("flow snapshot worker failed: {error}")))?
 }
 
 #[tauri::command]

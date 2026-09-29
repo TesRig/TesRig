@@ -11,6 +11,7 @@ import {
   chooseCaseExportDirectory,
   cancelSimulation,
   exportOpenFoamCase,
+  getFlowSnapshot,
   getOpenFoamRuntime,
   getSimulationStatus,
   startSimulation,
@@ -18,7 +19,14 @@ import {
   validateCase,
 } from "../case.api";
 import { CfdSetupPanel } from "./CfdSetupPanel";
-import type { OpenFoamRuntimeStatus, SimulationJob, SimulationLog } from "../case.types";
+import type {
+  FlowSnapshot,
+  OpenFoamRuntimeStatus,
+  SimulationJob,
+  SimulationLog,
+} from "../case.types";
+import { FlowResultsViewer } from "./FlowResultsViewer";
+import { ProcessingScriptsPanel } from "./ProcessingScriptsDialog";
 
 interface CaseWorkspaceProps {
   simulationCase: SimulationCase;
@@ -27,6 +35,10 @@ interface CaseWorkspaceProps {
   onUpAxisChange: (upAxis: UpAxis) => void;
   onSimulationChange: (job: SimulationJob | null) => void;
   simulationLog: SimulationLog | null;
+  addProbeRequest: number;
+  onProbeCountChange: (count: number) => void;
+  processingScriptsOpen: boolean;
+  onCloseProcessingScripts: () => void;
 }
 
 export function CaseWorkspace({
@@ -36,6 +48,10 @@ export function CaseWorkspace({
   onUpAxisChange,
   onSimulationChange,
   simulationLog,
+  addProbeRequest,
+  onProbeCountChange,
+  processingScriptsOpen,
+  onCloseProcessingScripts,
 }: CaseWorkspaceProps) {
   const { project, syncProject } = useWorkspace();
   const [busy, setBusy] = useState(false);
@@ -44,15 +60,23 @@ export function CaseWorkspace({
   const [selectedSurface, setSelectedSurface] = useState<string | null>(null);
   const [runtime, setRuntime] = useState<OpenFoamRuntimeStatus | null>(null);
   const [job, setJob] = useState<SimulationJob | null>(null);
+  const [flowSnapshot, setFlowSnapshot] = useState<FlowSnapshot | null>(null);
+  const [showFlowView, setShowFlowView] = useState(false);
   const geometry = project?.geometries.find(({ id }) => id === simulationCase.geometryId);
   const sourceCase = project?.cases.find(({ id }) => id === simulationCase.variantOfCaseId);
+  const jobId = job?.id;
+  const jobStatus = job?.status;
   const simulationActive = Boolean(
-    job && ["Starting", "Running", "Cancelling"].includes(job.status),
+    jobStatus && ["Starting", "Running", "Cancelling"].includes(jobStatus),
   );
 
   useEffect(() => setSelection(simulationCase.geometryId ?? ""), [simulationCase.geometryId]);
   useEffect(() => setSelectedSurface(null), [simulationCase.geometryId]);
   useEffect(() => setSetup(simulationCase.cfdSetup), [simulationCase.cfdSetup]);
+  useEffect(() => {
+    setFlowSnapshot(null);
+    setShowFlowView(false);
+  }, [simulationCase.id]);
   useEffect(() => onSimulationChange(job), [job, onSimulationChange]);
   useEffect(() => {
     let disposed = false;
@@ -64,7 +88,11 @@ export function CaseWorkspace({
         ]);
         if (disposed) return;
         setRuntime(nextRuntime);
-        setJob(currentJob);
+        const caseJob = currentJob?.caseId === simulationCase.id ? currentJob : null;
+        setJob(caseJob);
+        setShowFlowView(
+          Boolean(caseJob && ["Starting", "Running", "Completed"].includes(caseJob.status)),
+        );
 
         const autoRun = import.meta.env.DEV && import.meta.env.VITE_TESRIG_DEV_AUTORUN === "1";
         if (!autoRun || currentJob || !nextRuntime.runtimeReady || !project || !geometry) return;
@@ -83,6 +111,7 @@ export function CaseWorkspace({
         const started = await startSimulation(project.id, simulationCase.id);
         if (!disposed) {
           setJob(started);
+          setShowFlowView(true);
           onStatus("Simulation running.");
         }
       } catch (error) {
@@ -99,7 +128,7 @@ export function CaseWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
-    if (!job || !["Starting", "Running", "Cancelling"].includes(job.status)) return;
+    if (!jobId || !jobStatus || !["Starting", "Running", "Cancelling"].includes(jobStatus)) return;
     const interval = window.setInterval(() => {
       void getSimulationStatus()
         .then((nextJob) => {
@@ -107,15 +136,41 @@ export function CaseWorkspace({
           if (nextJob?.status === "Completed") {
             onStatus("OpenFOAM simulation completed.");
           } else if (nextJob?.status === "Failed") {
+            setShowFlowView(false);
             onStatus(nextJob.error ?? "OpenFOAM simulation failed.", true);
           } else if (nextJob?.status === "Cancelled") {
+            setShowFlowView(false);
             onStatus("Simulation cancelled.");
           }
         })
         .catch((error) => onStatus(toUserMessage(error), true));
     }, 1000);
     return () => window.clearInterval(interval);
-  }, [job, onStatus]);
+  }, [jobId, jobStatus, onStatus]);
+  useEffect(() => {
+    if (!showFlowView || !jobId || !jobStatus) return;
+    let disposed = false;
+    let loading = false;
+    const refresh = async () => {
+      if (loading) return;
+      loading = true;
+      try {
+        const next = await getFlowSnapshot();
+        if (!disposed && next) setFlowSnapshot(next);
+      } catch {
+        // Keep the last complete frame if OpenFOAM is currently replacing a field file.
+      } finally {
+        loading = false;
+      }
+    };
+    void refresh();
+    const active = ["Starting", "Running", "Cancelling"].includes(jobStatus);
+    const interval = active ? window.setInterval(() => void refresh(), 3000) : undefined;
+    return () => {
+      disposed = true;
+      if (interval !== undefined) window.clearInterval(interval);
+    };
+  }, [jobId, jobStatus, showFlowView]);
   const selectSurface = useCallback((surface: string) => setSelectedSurface(surface), []);
 
   async function handleImport() {
@@ -197,6 +252,8 @@ export function CaseWorkspace({
   async function handleRun() {
     if (!project) return;
     setBusy(true);
+    setShowFlowView(true);
+    setFlowSnapshot(null);
     onStatus("Preparing OpenFOAM case…");
     try {
       if (geometry?.format === "STEP") {
@@ -209,6 +266,7 @@ export function CaseWorkspace({
       setJob(started);
       onStatus("Simulation running.");
     } catch (error) {
+      setShowFlowView(false);
       onStatus(toUserMessage(error), true);
     } finally {
       setBusy(false);
@@ -218,7 +276,9 @@ export function CaseWorkspace({
   async function handleCancel() {
     onStatus("Stopping simulation…");
     try {
-      setJob(await cancelSimulation());
+      const cancelled = await cancelSimulation();
+      setJob(cancelled);
+      if (cancelled.status === "Cancelled") setShowFlowView(false);
     } catch (error) {
       onStatus(toUserMessage(error), true);
     }
@@ -235,6 +295,18 @@ export function CaseWorkspace({
       onAssignGeometry={handleAssign}
       onImportGeometry={handleImport}
       onCreateVariant={() => onCreateVariant(simulationCase.id)}
+      processingScripts={
+        processingScriptsOpen && project ? (
+          <ProcessingScriptsPanel
+            key={simulationCase.id}
+            projectId={project.id}
+            caseId={simulationCase.id}
+            simulationActive={simulationActive}
+            onStatus={onStatus}
+            onClose={onCloseProcessingScripts}
+          />
+        ) : null
+      }
       setup={setup}
       selectedSurface={geometry ? selectedSurface : null}
       busy={busy || simulationActive}
@@ -252,21 +324,39 @@ export function CaseWorkspace({
   return (
     <section className="geometry-editor case-editor">
       {geometry ? (
-        <GeometryViewer
-          projectId={project!.id}
-          geometry={geometry}
-          selectedSurface={selectedSurface}
-          onSurfaceSelect={selectSurface}
-          upAxis={project!.settings.upAxis}
-          onUpAxisChange={onUpAxisChange}
-          boundaryBox={setup.boundaryBox}
-          flowVelocity={setup.initialConditions.velocity}
-          onBoundaryBoxChange={(boundaryBox) =>
-            setSetup((current) => ({ ...current, boundaryBox }))
-          }
-        >
-          {setupPanel}
-        </GeometryViewer>
+        showFlowView ? (
+          <FlowResultsViewer
+            projectId={project!.id}
+            geometry={geometry}
+            setup={setup}
+            snapshot={flowSnapshot}
+            isPreview={jobStatus !== "Completed"}
+            selectedSurface={selectedSurface}
+            onSurfaceSelect={selectSurface}
+            upAxis={project!.settings.upAxis}
+            onUpAxisChange={onUpAxisChange}
+            addProbeRequest={addProbeRequest}
+            onProbeCountChange={onProbeCountChange}
+          >
+            {setupPanel}
+          </FlowResultsViewer>
+        ) : (
+          <GeometryViewer
+            projectId={project!.id}
+            geometry={geometry}
+            selectedSurface={selectedSurface}
+            onSurfaceSelect={selectSurface}
+            upAxis={project!.settings.upAxis}
+            onUpAxisChange={onUpAxisChange}
+            boundaryBox={setup.boundaryBox}
+            flowVelocity={setup.initialConditions.velocity}
+            onBoundaryBoxChange={(boundaryBox) =>
+              setSetup((current) => ({ ...current, boundaryBox }))
+            }
+          >
+            {setupPanel}
+          </GeometryViewer>
+        )
       ) : (
         <div className="geometry-viewer case-geometry-empty case-geometry-empty--with-panel">
           <div className="case-geometry-empty__message">

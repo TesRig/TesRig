@@ -40,6 +40,9 @@ export function WorkspaceShell() {
   const [simulationLog, setSimulationLog] = useState<SimulationLog | null>(null);
   const [followingSimulationLog, setFollowingSimulationLog] = useState(true);
   const [clearingSimulationLog, setClearingSimulationLog] = useState(false);
+  const [addProbeRequest, setAddProbeRequest] = useState(0);
+  const [flowProbeCount, setFlowProbeCount] = useState(1);
+  const [showProcessingScripts, setShowProcessingScripts] = useState(false);
   const stdoutLogRef = useRef<HTMLPreElement>(null);
   const stderrLogRef = useRef<HTMLPreElement>(null);
 
@@ -87,19 +90,30 @@ export function WorkspaceShell() {
     return () => window.cancelAnimationFrame(frame);
   }, [followingSimulationLog, showSimulationLog, simulationLog]);
 
+  const reportStatus = useCallback((message: string, isError = false) => {
+    const displayMessage = message.replace(/&#x20;|&#32;/gi, " ").trim();
+    setStatus(isError ? (displayMessage.split(/\r?\n/, 1)[0] ?? displayMessage) : displayMessage);
+    setStatusError(isError);
+    if (isError) setErrorDialog(displayMessage);
+  }, []);
+
   if (!project) return null;
   const projectId = project.id;
   const projectSettings = project.settings;
   const selectedGeometry =
     project.geometries.find(({ id }) => id === selectedGeometryId) ?? project.geometries[0];
-  const currentViewName = activeCase ? `Case / ${activeCase.name}` : "Geometry";
-
-  function reportStatus(message: string, isError = false) {
-    const displayMessage = message.replace(/&#x20;|&#32;/gi, " ").trim();
-    setStatus(isError ? (displayMessage.split(/\r?\n/, 1)[0] ?? displayMessage) : displayMessage);
-    setStatusError(isError);
-    if (isError) setErrorDialog(displayMessage);
-  }
+  const simulationPreviewActive = Boolean(
+    activeCase &&
+    simulationJob?.caseId === activeCase.id &&
+    ["Starting", "Running", "Cancelling"].includes(simulationJob.status),
+  );
+  const simulationResultVisible = Boolean(
+    activeCase && simulationJob?.caseId === activeCase.id && simulationJob.status === "Completed",
+  );
+  const flowToolsVisible = simulationPreviewActive || simulationResultVisible;
+  const currentViewName = activeCase
+    ? `${simulationPreviewActive ? "Flow preview" : simulationResultVisible ? "Flow result" : "Case"} / ${activeCase.name}`
+    : "Geometry";
 
   function openSimulationLogs() {
     setFollowingSimulationLog(true);
@@ -299,6 +313,37 @@ export function WorkspaceShell() {
             </Button>
           )}
         </div>
+        {activeCase ? (
+          <div className={`command-group ${flowToolsVisible ? "is-context" : ""}`}>
+            <span className="command-group__label">Flow</span>
+            <Button
+              variant="ghost"
+              disabled={!flowToolsVisible}
+              onClick={() => setAddProbeRequest((request) => request + 1)}
+            >
+              <span className="command-icon" aria-hidden="true">
+                ＋
+              </span>
+              Add probe ({flowProbeCount})
+            </Button>
+            <Button
+              variant="ghost"
+              className={showProcessingScripts ? "is-active" : undefined}
+              onClick={() => setShowProcessingScripts((visible) => !visible)}
+            >
+              <span className="command-icon" aria-hidden="true">
+                Py
+              </span>
+              Python API
+            </Button>
+          </div>
+        ) : null}
+        {simulationPreviewActive ? (
+          <div className="command-bar__preview" role="status" aria-live="polite">
+            <span>Preview</span>
+            Latest solver snapshot · results may be inaccurate
+          </div>
+        ) : null}
         <div className="command-bar__view">
           <span>Current view</span>
           <strong>{currentViewName}</strong>
@@ -418,6 +463,10 @@ export function WorkspaceShell() {
               simulationLog={simulationJob?.caseId === activeCase.id ? simulationLog : null}
               onStatus={reportStatus}
               onSimulationChange={reportSimulation}
+              addProbeRequest={addProbeRequest}
+              onProbeCountChange={setFlowProbeCount}
+              processingScriptsOpen={showProcessingScripts}
+              onCloseProcessingScripts={() => setShowProcessingScripts(false)}
               onCreateVariant={(caseId) => startNewCase(caseId)}
               onUpAxisChange={handleUpAxisChange}
             />

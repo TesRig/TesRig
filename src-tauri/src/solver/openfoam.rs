@@ -421,7 +421,7 @@ fn control_dict(case: &SimulationCase) -> String {
         ),
     };
     format!(
-        "{}application simpleFoam;\nsolver incompressibleFluid;\nstartFrom startTime;\nstartTime 0;\nstopAt endTime;\nendTime {};\ndeltaT {};\nwriteControl {};\nwriteInterval {};\npurgeWrite {};\nwriteFormat binary;\nwritePrecision 8;\nrunTimeModifiable true;\nfunctions\n{{\n    TesRigVelocityAverage\n    {{\n        type volFieldValue;\n        libs (fieldFunctionObjects);\n        log true;\n        writeControl timeStep;\n        writeInterval 1;\n        writeFields false;\n        regionType all;\n        cellZone all;\n        operation volAverage;\n        fields (U);\n    }}\n}}\n",
+        "{}application simpleFoam;\nsolver incompressibleFluid;\nstartFrom startTime;\nstartTime 0;\nstopAt endTime;\nendTime {};\ndeltaT {};\nwriteControl {};\nwriteInterval {};\npurgeWrite {};\nwriteFormat ascii;\nwritePrecision 8;\nrunTimeModifiable true;\nfunctions\n{{\n    TesRigVelocityAverage\n    {{\n        type volFieldValue;\n        libs (fieldFunctionObjects);\n        log true;\n        writeControl timeStep;\n        writeInterval 1;\n        writeFields false;\n        regionType all;\n        cellZone all;\n        operation volAverage;\n        fields (U);\n    }}\n}}\n",
         header("dictionary", "system", "controlDict"),
         num(end_time),
         num(time_step),

@@ -31,6 +31,10 @@
     "targets": "all",
     "category": "DeveloperTool",
     "shortDescription": "Engineering simulation workspace",
-    "resources": ["resources/openfoam/**/*"]
+    "resources": [
+      "resources/openfoam/**/*",
+      "resources/python/**/*",
+      "resources/python-api-docs/**/*"
+    ]
   }
 }

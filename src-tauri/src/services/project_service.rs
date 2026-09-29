@@ -7,6 +7,9 @@ use crate::domain::project::{
 };
 use crate::error::{AppError, AppResult};
 use crate::solver::openfoam::{CaseValidation, OpenFoamAdapter};
+use crate::solver::processing::{
+    self, ProcessingResult, ProcessingResultSummary, ProcessingScript, ProcessingScriptRun,
+};
 use chrono::Utc;
 use serde_json::Value;
 use std::fs;
@@ -265,6 +268,88 @@ impl ProjectService {
         Ok(case_root)
     }
 
+    pub fn list_processing_scripts(
+        &self,
+        project_id: Uuid,
+        case_id: Uuid,
+    ) -> AppResult<Vec<ProcessingScript>> {
+        let workspace = self.workspaces.current()?;
+        ensure_project(workspace, project_id)?;
+        ensure_case(workspace, case_id)?;
+        processing::list_scripts(&openfoam_case_root(workspace.root(), case_id))
+    }
+
+    pub fn list_processing_results(
+        &self,
+        project_id: Uuid,
+        case_id: Uuid,
+    ) -> AppResult<Vec<ProcessingResultSummary>> {
+        let workspace = self.workspaces.current()?;
+        ensure_project(workspace, project_id)?;
+        ensure_case(workspace, case_id)?;
+        processing::list_results(&openfoam_case_root(workspace.root(), case_id))
+    }
+
+    pub fn read_processing_result(
+        &self,
+        project_id: Uuid,
+        case_id: Uuid,
+        file_name: &str,
+    ) -> AppResult<ProcessingResult> {
+        let workspace = self.workspaces.current()?;
+        ensure_project(workspace, project_id)?;
+        ensure_case(workspace, case_id)?;
+        processing::read_result(&openfoam_case_root(workspace.root(), case_id), file_name)
+    }
+
+    pub fn save_processing_script(
+        &mut self,
+        project_id: Uuid,
+        case_id: Uuid,
+        name: &str,
+        source: &str,
+    ) -> AppResult<ProcessingScript> {
+        let workspace = self.workspaces.current_mut()?;
+        ensure_project(workspace, project_id)?;
+        ensure_case(workspace, case_id)?;
+        let script =
+            processing::save_script(&openfoam_case_root(workspace.root(), case_id), name, source)?;
+        ArchiveService::write(workspace.root(), &workspace.archive_path)?;
+        Ok(script)
+    }
+
+    pub fn delete_processing_script(
+        &mut self,
+        project_id: Uuid,
+        case_id: Uuid,
+        name: &str,
+    ) -> AppResult<()> {
+        let workspace = self.workspaces.current_mut()?;
+        ensure_project(workspace, project_id)?;
+        ensure_case(workspace, case_id)?;
+        processing::delete_script(&openfoam_case_root(workspace.root(), case_id), name)?;
+        ArchiveService::write(workspace.root(), &workspace.archive_path)
+    }
+
+    pub fn run_processing_script(
+        &mut self,
+        project_id: Uuid,
+        case_id: Uuid,
+        name: &str,
+        interpreter: &Path,
+    ) -> AppResult<ProcessingScriptRun> {
+        let workspace = self.workspaces.current_mut()?;
+        ensure_project(workspace, project_id)?;
+        ensure_case(workspace, case_id)?;
+        let result = processing::run_script_with_interpreter(
+            &openfoam_case_root(workspace.root(), case_id),
+            name,
+            Some(interpreter),
+        )?;
+        ArchiveService::write(workspace.root(), &workspace.archive_path)?;
+        Ok(result)
+    }
+
     pub fn import_geometry(
         &mut self,
         project_id: Uuid,
@@ -461,6 +546,20 @@ fn ensure_project(workspace: &OpenWorkspace, project_id: Uuid) -> AppResult<()> 
     } else {
         Err(AppError::ProjectMismatch)
     }
+}
+
+fn ensure_case(workspace: &OpenWorkspace, case_id: Uuid) -> AppResult<()> {
+    if workspace.cases.iter().any(|item| item.id == case_id) {
+        Ok(())
+    } else {
+        Err(AppError::CaseNotFound(case_id.to_string()))
+    }
+}
+
+fn openfoam_case_root(root: &Path, case_id: Uuid) -> PathBuf {
+    root.join("cases")
+        .join(case_id.to_string())
+        .join("openfoam")
 }
 
 fn ensure_geometry(workspace: &OpenWorkspace, geometry_id: Uuid) -> AppResult<&GeometryAsset> {

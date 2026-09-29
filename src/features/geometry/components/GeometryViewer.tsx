@@ -2,13 +2,11 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { ViewHelper } from "three/examples/jsm/helpers/ViewHelper.js";
-import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
-import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 import { toUserMessage } from "../../../lib/errors/app-error";
 import type { BoundaryBox } from "../../cases/case.types";
 import type { GeometryAsset, UpAxis } from "../../projects/project.types";
 import { getGeometryData } from "../geometry.api";
-import { createStepModel } from "../step-geometry";
+import { createGeometryModel } from "../geometry-model";
 
 interface GeometryViewerProps {
   projectId: string;
@@ -47,15 +45,6 @@ const UPSTREAM_LENGTHS = 3;
 const DOWNSTREAM_LENGTHS = 5;
 const CROSS_FLOW_LENGTHS = 3;
 const MIN_AXIS_REFERENCE_RATIO = 0.05;
-
-const surfaceMaterial = new THREE.MeshStandardMaterial({
-  color: 0x72cfff,
-  emissive: 0x0b2838,
-  emissiveIntensity: 0.75,
-  metalness: 0.03,
-  roughness: 0.42,
-  side: THREE.DoubleSide,
-});
 
 const boundaryFaces = [
   { id: "domain:xMin", axis: 0, side: "min" as const },
@@ -149,44 +138,6 @@ function assessBoundaryBox(
     level: "recommended",
     message: "Boundary box is within the recommended external-flow region.",
   };
-}
-
-function brightenSourceColor(
-  material: THREE.MeshStandardMaterial,
-  source: [number, number, number],
-) {
-  const color = new THREE.Color(...source);
-  const hsl = { h: 0, s: 0, l: 0 };
-  color.getHSL(hsl);
-  const saturation = hsl.s < 0.08 ? hsl.s : Math.max(hsl.s, 0.38);
-  color.setHSL(hsl.h, saturation, Math.max(hsl.l, 0.58));
-  material.color.copy(color);
-  material.emissive.copy(color).multiplyScalar(0.18);
-}
-
-async function createModel(asset: GeometryAsset, bytes: Uint8Array) {
-  if (asset.format === "STL") {
-    const geometry = new STLLoader().parse(bytes.buffer as ArrayBuffer);
-    geometry.computeVertexNormals();
-    return new THREE.Mesh(geometry, surfaceMaterial.clone());
-  }
-
-  if (asset.format === "STEP") {
-    return createStepModel(bytes, (color) => {
-      const material = surfaceMaterial.clone();
-      if (color) brightenSourceColor(material, color);
-      return material;
-    });
-  }
-
-  const object = new OBJLoader().parse(new TextDecoder().decode(bytes));
-  object.traverse((child) => {
-    if (child instanceof THREE.Mesh) {
-      child.material = surfaceMaterial.clone();
-      child.geometry.computeVertexNormals();
-    }
-  });
-  return object;
 }
 
 function createModelTree(model: THREE.Object3D, rootLabel: string): ModelTreeNode {
@@ -477,7 +428,16 @@ export function GeometryViewer({
       const hit = raycaster
         .intersectObjects(scene.children, true)
         .find(({ object }) => typeof object.userData.tesrigSurface === "string");
-      if (hit) onSurfaceSelect?.(hit.object.userData.tesrigSurface as string);
+      if (hit) {
+        onSurfaceSelect?.(hit.object.userData.tesrigSurface as string);
+        return;
+      }
+      if (!editingBoundaryBoxRef.current && boundaryBoxValueRef.current) {
+        const boundaryHit = raycaster.intersectObjects(boundaryFaceMeshes, false)[0];
+        if (boundaryHit) {
+          onSurfaceSelect?.(boundaryHit.object.userData.tesrigBoundaryFace as string);
+        }
+      }
     };
     const handleModelPointerCancel = (event: PointerEvent) => {
       if (faceDrag?.pointerId !== event.pointerId) return;
@@ -667,10 +627,12 @@ export function GeometryViewer({
     const handleHelperPointerMove = (event: PointerEvent) => {
       if (isInsideViewHelper(event)) {
         renderer.domElement.style.cursor = "pointer";
-      } else if (!faceDrag && editingBoundaryBoxRef.current) {
+      } else if (!faceDrag && boundaryBoxValueRef.current) {
         setPointerFromEvent(event);
         renderer.domElement.style.cursor = raycaster.intersectObjects(boundaryFaceMeshes, false)[0]
-          ? "grab"
+          ? editingBoundaryBoxRef.current
+            ? "grab"
+            : "pointer"
           : "";
       } else if (!faceDrag) {
         renderer.domElement.style.cursor = "";
@@ -700,7 +662,7 @@ export function GeometryViewer({
         setMessage(
           geometry.format === "STEP" ? "Tessellating STEP geometry…" : "Loading geometry…",
         );
-        return createModel(geometry, Uint8Array.from(bytes));
+        return createGeometryModel(geometry, Uint8Array.from(bytes));
       })
       .then((model) => {
         if (disposed || !model) return;

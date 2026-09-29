@@ -6,6 +6,7 @@ mod solver;
 mod storage;
 
 use services::project_service::ProjectService;
+use solver::processing::PythonRuntime;
 use solver::runtime::RuntimeManager;
 use solver::simulation::SimulationManager;
 use std::path::PathBuf;
@@ -15,12 +16,15 @@ use tauri::Manager;
 pub struct AppState {
     project_service: Arc<Mutex<ProjectService>>,
     runtime_manager: RuntimeManager,
+    python_runtime: PythonRuntime,
     simulation_manager: SimulationManager,
 }
 
 impl AppState {
     fn new(resource_directory: PathBuf, data_directory: PathBuf) -> Self {
-        let runtime_manager = RuntimeManager::new(resource_directory, data_directory);
+        let runtime_manager =
+            RuntimeManager::new(resource_directory.clone(), data_directory.clone());
+        let python_runtime = PythonRuntime::new(resource_directory, data_directory);
         #[allow(unused_mut)]
         let mut project_service = ProjectService::new();
         #[cfg(debug_assertions)]
@@ -31,6 +35,7 @@ impl AppState {
             project_service: Arc::new(Mutex::new(project_service)),
             simulation_manager: SimulationManager::new(runtime_manager.clone()),
             runtime_manager,
+            python_runtime,
         }
     }
 
@@ -150,8 +155,17 @@ pub fn run() {
             commands::solver::start_simulation,
             commands::solver::get_simulation_status,
             commands::solver::get_simulation_log,
+            commands::solver::get_flow_snapshot,
             commands::solver::clear_simulation_log,
             commands::solver::cancel_simulation,
+            commands::processing::list_processing_scripts,
+            commands::processing::list_processing_results,
+            commands::processing::read_processing_result,
+            commands::processing::save_processing_script,
+            commands::processing::delete_processing_script,
+            commands::processing::run_processing_script,
+            commands::processing::validate_processing_script,
+            commands::processing::open_python_api_docs,
         ])
         .run(tauri::generate_context!())
         .expect("failed to start TesRig");

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Button } from "../../../components/common/Button";
 import type { GeometryAsset } from "../../projects/project.types";
 import type {
@@ -34,6 +34,7 @@ interface CfdSetupPanelProps {
   onAssignGeometry: () => void;
   onImportGeometry: () => void;
   onCreateVariant: () => void;
+  processingScripts?: ReactNode;
 }
 
 type Section = "case" | "flow" | "boundaries" | "mesh" | "run";
@@ -118,6 +119,7 @@ export function CfdSetupPanel({
   onAssignGeometry,
   onImportGeometry,
   onCreateVariant,
+  processingScripts,
 }: CfdSetupPanelProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [chartCollapsed, setChartCollapsed] = useState(false);
@@ -127,6 +129,9 @@ export function CfdSetupPanel({
     () => setup.boundaries.find(({ surface }) => surface === activePatch) ?? null,
     [activePatch, setup.boundaries],
   );
+  const selectedSurfaceBoundary = selectedSurface
+    ? setup.boundaries.find(({ surface }) => surface === selectedSurface)
+    : null;
   const backgroundMeshPlan = useMemo(
     () =>
       setup.boundaryBox
@@ -418,7 +423,7 @@ export function CfdSetupPanel({
                     </strong>
                     <span>
                       {setup.boundaryBox
-                        ? "Use Edit boundary box above, then click a translucent face to configure it."
+                        ? "Finish box editing before selecting a translucent domain face. Selection mode will not resize the box."
                         : "Create a boundary box above before assigning boundary conditions."}
                     </span>
                   </div>
@@ -430,10 +435,13 @@ export function CfdSetupPanel({
                         : "Click a surface in the view"}
                     </strong>
                     <Button
+                      variant={selectedSurfaceBoundary ? "secondary" : "primary"}
                       onClick={addSelectedBoundary}
                       disabled={!selectedSurface || !setup.boundaryBox}
                     >
-                      Add / edit boundary
+                      {selectedSurfaceBoundary
+                        ? "Open selected boundary in list"
+                        : "Add selected face to boundary list"}
                     </Button>
                   </div>
                   {setup.boundaries.length > 0 && (
@@ -712,6 +720,7 @@ export function CfdSetupPanel({
           onToggleCollapsed={() => setChartCollapsed((value) => !value)}
         />
       )}
+      {processingScripts}
     </div>
   );
 }

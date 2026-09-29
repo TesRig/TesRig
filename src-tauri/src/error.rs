@@ -27,6 +27,8 @@ pub enum AppError {
     CaseNotFound(String),
     #[error("The CFD case setup is invalid: {0}")]
     InvalidCaseSetup(String),
+    #[error("The Python processing script is invalid: {0}")]
+    InvalidProcessingScript(String),
     #[error("Generate the OpenFOAM case files before exporting them.")]
     CaseFilesNotGenerated,
     #[error("An OpenFOAM case already exists at: {0}")]
@@ -64,6 +66,7 @@ impl AppError {
             Self::ArchiveWriteFailed(_) => "ARCHIVE_WRITE_FAILED",
             Self::CaseNotFound(_) => "CASE_NOT_FOUND",
             Self::InvalidCaseSetup(_) => "INVALID_CASE_SETUP",
+            Self::InvalidProcessingScript(_) => "INVALID_PROCESSING_SCRIPT",
             Self::CaseFilesNotGenerated => "CASE_FILES_NOT_GENERATED",
             Self::ExportAlreadyExists(_) => "EXPORT_ALREADY_EXISTS",
             Self::SolverRuntimeUnavailable(_) => "SOLVER_RUNTIME_UNAVAILABLE",
