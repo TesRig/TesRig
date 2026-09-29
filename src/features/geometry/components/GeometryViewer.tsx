@@ -12,14 +12,19 @@ import { createGeometryModel } from "../geometry-model";
 interface GeometryViewerProps {
   projectId: string;
   geometry: GeometryAsset;
+  geometryData?: number[];
   geometries?: GeometryAsset[];
   onGeometryChange?: (geometryId: string) => void;
   selectedSurface?: string | null;
   onSurfaceSelect?: (surface: string) => void;
   upAxis: UpAxis;
-  onUpAxisChange: (upAxis: UpAxis) => void;
+  onUpAxisChange?: (upAxis: UpAxis) => void;
   boundaryBox?: BoundaryBox | null;
   flowDirection?: [number, number, number];
+  boundaryFaceColors?: Readonly<Record<string, number>>;
+  surfaceColors?: Readonly<Record<string, number>>;
+  defaultSurfaceColor?: number;
+  showFlowDirection?: boolean;
   onBoundaryBoxChange?: (boundaryBox: BoundaryBox) => void;
   leftPanel?: ReactNode;
   children?: ReactNode;
@@ -215,6 +220,7 @@ function ModelTreeBranch({
 export function GeometryViewer({
   projectId,
   geometry,
+  geometryData,
   geometries,
   onGeometryChange,
   selectedSurface,
@@ -223,6 +229,10 @@ export function GeometryViewer({
   onUpAxisChange,
   boundaryBox,
   flowDirection = [1, 0, 0],
+  boundaryFaceColors,
+  surfaceColors,
+  defaultSurfaceColor,
+  showFlowDirection = false,
   onBoundaryBoxChange,
   leftPanel,
   children,
@@ -293,12 +303,39 @@ export function GeometryViewer({
     const pointer = new THREE.Vector2();
     let pointerStart: { x: number; y: number } | null = null;
     let rawModelBounds: THREE.Box3 | null = null;
+    let positionedGeometryBounds: THREE.Box3 | null = null;
     const modelOffset = new THREE.Vector3();
     let geometrySphere: THREE.Sphere | null = null;
     let domainSphere: THREE.Sphere | null = null;
     const boundaryGroup = new THREE.Group();
     boundaryGroup.visible = false;
     scene.add(boundaryGroup);
+    const flowArrow = new THREE.ArrowHelper(
+      new THREE.Vector3(1, 0, 0),
+      new THREE.Vector3(),
+      1,
+      0xffcf66,
+      0.2,
+      0.1,
+    );
+    flowArrow.visible = false;
+    scene.add(flowArrow);
+    const updateFlowArrow = (bounds: THREE.Box3 | null) => {
+      if (!showFlowDirection || !bounds || bounds.isEmpty()) {
+        flowArrow.visible = false;
+        return;
+      }
+      const direction = new THREE.Vector3(...flowDirectionRef.current);
+      if (direction.lengthSq() === 0) direction.set(1, 0, 0);
+      direction.normalize();
+      const size = bounds.getSize(new THREE.Vector3());
+      const length = Math.max(size.x, size.y, size.z, 1e-6) * 0.32;
+      const center = bounds.getCenter(new THREE.Vector3());
+      flowArrow.position.copy(center).addScaledVector(direction, -length * 0.5);
+      flowArrow.setDirection(direction);
+      flowArrow.setLength(length, length * 0.22, length * 0.1);
+      flowArrow.visible = true;
+    };
     const boundaryWire = new THREE.LineSegments(
       new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)),
       new THREE.LineBasicMaterial({ color: 0x72cfff, transparent: true, opacity: 0.78 }),
@@ -306,17 +343,20 @@ export function GeometryViewer({
     boundaryWire.renderOrder = 3;
     boundaryGroup.add(boundaryWire);
     const boundaryFaceMeshes = boundaryFaces.map((face) => {
+      const faceColor = boundaryFaceColors?.[face.id] ?? 0x72cfff;
       const mesh = new THREE.Mesh(
         new THREE.PlaneGeometry(1, 1),
         new THREE.MeshBasicMaterial({
-          color: 0x72cfff,
+          color: faceColor,
           side: THREE.DoubleSide,
           transparent: true,
-          opacity: 0.08,
+          opacity: boundaryFaceColors ? 0.16 : 0.08,
           depthWrite: false,
         }),
       );
       mesh.userData.tesrigBoundaryFace = face.id;
+      mesh.userData.tesrigBoundaryBaseColor = faceColor;
+      mesh.userData.tesrigBoundaryBaseOpacity = boundaryFaceColors ? 0.16 : 0.08;
       mesh.userData.tesrigBoundaryAxis = face.axis;
       mesh.userData.tesrigBoundarySide = face.side;
       mesh.renderOrder = 2;
@@ -329,17 +369,25 @@ export function GeometryViewer({
         const materials = Array.isArray(object.material) ? object.material : [object.material];
         materials.forEach((material) => {
           if (material instanceof THREE.MeshStandardMaterial) {
-            material.emissiveIntensity = object.userData.tesrigSurface === surface ? 1.65 : 0.75;
+            const selected =
+              object.userData.tesrigSurface === surface ||
+              (surface === "geometry" && defaultSurfaceColor !== undefined);
+            material.emissiveIntensity = selected ? 1.65 : 0.75;
           } else if (
             material instanceof THREE.MeshBasicMaterial &&
             typeof object.userData.tesrigBoundaryFace === "string"
           ) {
             const isSelected = object.userData.tesrigBoundaryFace === surface;
             const baseColor = object.userData.tesrigBoundaryBaseColor;
+            const baseOpacity = object.userData.tesrigBoundaryBaseOpacity;
             material.color.setHex(
               isSelected ? 0xffb454 : typeof baseColor === "number" ? baseColor : 0x72cfff,
             );
-            material.opacity = isSelected ? 0.42 : 0.08;
+            material.opacity = isSelected
+              ? 0.42
+              : typeof baseOpacity === "number"
+                ? baseOpacity
+                : 0.08;
             object.renderOrder = isSelected ? 4 : 2;
           }
         });
@@ -529,6 +577,7 @@ export function GeometryViewer({
       if (!box || !rawModelBounds) {
         boundaryGroup.visible = false;
         domainSphere = null;
+        updateFlowArrow(positionedGeometryBounds);
         setBoundaryBoxAssessment(null);
         return;
       }
@@ -536,13 +585,15 @@ export function GeometryViewer({
       const boundaryColor = boundaryBoxColors[assessment.level];
       setBoundaryBoxAssessment(assessment);
       (boundaryWire.material as THREE.LineBasicMaterial).color.setHex(boundaryColor);
-      boundaryFaceMeshes.forEach((mesh) => {
-        mesh.userData.tesrigBoundaryBaseColor = boundaryColor;
-        (mesh.material as THREE.MeshBasicMaterial).color.setHex(boundaryColor);
+      boundaryFaceMeshes.forEach((mesh, index) => {
+        const faceColor = boundaryFaceColors?.[boundaryFaces[index].id] ?? boundaryColor;
+        mesh.userData.tesrigBoundaryBaseColor = faceColor;
+        (mesh.material as THREE.MeshBasicMaterial).color.setHex(faceColor);
       });
       const displayMin = new THREE.Vector3(...box.min).add(modelOffset);
       const displayMax = new THREE.Vector3(...box.max).add(modelOffset);
       const displayBounds = new THREE.Box3(displayMin, displayMax);
+      updateFlowArrow(displayBounds);
       const size = displayBounds.getSize(new THREE.Vector3());
       const center = displayBounds.getCenter(new THREE.Vector3());
       boundaryGroup.visible = true;
@@ -697,7 +748,10 @@ export function GeometryViewer({
     observer.observe(container);
     resize();
 
-    void getGeometryData(projectId, geometry.id)
+    const geometryRequest = geometryData
+      ? Promise.resolve({ bytes: geometryData })
+      : getGeometryData(projectId, geometry.id);
+    void geometryRequest
       .then(({ bytes }) => {
         if (disposed) return null;
         setMessage(
@@ -720,6 +774,18 @@ export function GeometryViewer({
         modelOffset.copy(model.position);
         scene.add(model);
         setModelTree(createModelTree(model, geometry.name));
+        model.traverse((object) => {
+          if (!(object instanceof THREE.Mesh)) return;
+          const surface = object.userData.tesrigSurface as string | undefined;
+          const color = (surface ? surfaceColors?.[surface] : undefined) ?? defaultSurfaceColor;
+          if (color === undefined) return;
+          const materials = Array.isArray(object.material) ? object.material : [object.material];
+          materials.forEach((material) => {
+            if (!(material instanceof THREE.MeshStandardMaterial)) return;
+            material.color.setHex(color);
+            material.emissive.setHex(color).multiplyScalar(0.18);
+          });
+        });
         applySurfaceSelection(selectedSurfaceValueRef.current ?? null);
 
         const size = bounds.getSize(new THREE.Vector3());
@@ -742,6 +808,7 @@ export function GeometryViewer({
 
         model.updateMatrixWorld(true);
         const positionedBounds = new THREE.Box3().setFromObject(model);
+        positionedGeometryBounds = positionedBounds;
         geometrySphere = positionedBounds.getBoundingSphere(new THREE.Sphere());
         if (!Number.isFinite(geometrySphere.radius)) {
           throw new Error("The geometry dimensions are invalid and cannot be framed.");
@@ -784,7 +851,7 @@ export function GeometryViewer({
           object.geometry.dispose();
           const materials = Array.isArray(object.material) ? object.material : [object.material];
           materials.forEach((material) => material.dispose());
-        } else if (object instanceof THREE.LineSegments) {
+        } else if (object instanceof THREE.Line) {
           object.geometry.dispose();
           const materials = Array.isArray(object.material) ? object.material : [object.material];
           materials.forEach((material) => material.dispose());
@@ -792,7 +859,17 @@ export function GeometryViewer({
       });
       container.removeChild(renderer.domElement);
     };
-  }, [geometry, onSurfaceSelect, projectId, upAxis]);
+  }, [
+    boundaryFaceColors,
+    defaultSurfaceColor,
+    geometry,
+    geometryData,
+    onSurfaceSelect,
+    projectId,
+    surfaceColors,
+    showFlowDirection,
+    upAxis,
+  ]);
 
   useEffect(() => selectSurfaceRef.current(selectedSurface ?? null), [selectedSurface]);
   useEffect(() => {
@@ -801,7 +878,7 @@ export function GeometryViewer({
   }, [boundaryBox, flowDirection]);
 
   function selectUpAxis(nextAxis: UpAxis) {
-    if (nextAxis === upAxis) return;
+    if (nextAxis === upAxis || !onUpAxisChange) return;
     onUpAxisChange(nextAxis);
   }
 
@@ -858,6 +935,7 @@ export function GeometryViewer({
               <button
                 className={upAxis === "Y" ? "is-active" : ""}
                 type="button"
+                disabled={!onUpAxisChange}
                 onClick={() => selectUpAxis("Y")}
               >
                 Y
@@ -865,6 +943,7 @@ export function GeometryViewer({
               <button
                 className={upAxis === "Z" ? "is-active" : ""}
                 type="button"
+                disabled={!onUpAxisChange}
                 onClick={() => selectUpAxis("Z")}
               >
                 Z

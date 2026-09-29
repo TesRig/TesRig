@@ -7,6 +7,7 @@ import type {
   FlowSnapshot,
   CreateCaseInput,
   OpenFoamRuntimeStatus,
+  OpenFoamGeometryData,
   ProcessingScript,
   ProcessingScriptRun,
   ProcessingScriptValidation,
@@ -44,6 +45,13 @@ export function validateCase(projectId: string, caseId: string) {
     projectId,
     caseId,
   });
+}
+
+export function getOpenFoamGeometryData(projectId: string, caseId: string) {
+  return invokeCommand<OpenFoamGeometryData, { projectId: string; caseId: string }>(
+    "get_openfoam_geometry_data",
+    { projectId, caseId },
+  );
 }
 
 export async function chooseCaseExportDirectory() {

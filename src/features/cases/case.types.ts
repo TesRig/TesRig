@@ -120,6 +120,12 @@ export interface FlowSnapshot {
   source: "reconstructed" | "processor0";
 }
 
+export interface OpenFoamGeometryData {
+  fileName: string;
+  format: "STL" | "OBJ" | "STEP";
+  bytes: number[];
+}
+
 export interface ProcessingScript {
   name: string;
   source: string;

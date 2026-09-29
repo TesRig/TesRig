@@ -167,6 +167,44 @@ impl ProjectService {
             .ok_or_else(|| AppError::CaseNotFound(case_id.to_string()))
     }
 
+    pub fn get_openfoam_geometry_data(
+        &self,
+        project_id: Uuid,
+        case_id: Uuid,
+    ) -> AppResult<(String, GeometryFormat, Vec<u8>)> {
+        let workspace = self.workspaces.current()?;
+        ensure_project(workspace, project_id)?;
+        ensure_case(workspace, case_id)?;
+
+        let geometry_directory = openfoam_case_root(workspace.root(), case_id)
+            .join("constant")
+            .join("triSurface");
+        let mut candidates = fs::read_dir(geometry_directory)
+            .map_err(|_| AppError::CaseFilesNotGenerated)?
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let path = entry.path();
+                let format = path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .and_then(GeometryFormat::from_extension)?;
+                path.is_file().then_some((path, format))
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| left.0.cmp(&right.0));
+        let (path, format) = candidates
+            .into_iter()
+            .next()
+            .ok_or(AppError::CaseFilesNotGenerated)?;
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or(AppError::CaseFilesNotGenerated)?
+            .to_owned();
+        let bytes = fs::read(path).map_err(AppError::io)?;
+        Ok((file_name, format, bytes))
+    }
+
     pub fn update_case_setup(
         &mut self,
         project_id: Uuid,
@@ -911,6 +949,12 @@ mod tests {
             .prepare_simulation(project.id, simulation_case.id)
             .expect("STEP simulation preparation");
         assert!(case_root.join("constant/triSurface/geometry.stl").is_file());
+        let (file_name, format, bytes) = service
+            .get_openfoam_geometry_data(project.id, simulation_case.id)
+            .expect("generated OpenFOAM geometry");
+        assert_eq!(file_name, "geometry.stl");
+        assert_eq!(format, GeometryFormat::Stl);
+        assert_eq!(bytes, vec![0; 84]);
     }
 
     #[test]

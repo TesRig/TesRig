@@ -43,6 +43,7 @@ export function WorkspaceShell() {
   const [addProbeRequest, setAddProbeRequest] = useState(0);
   const [flowProbeCount, setFlowProbeCount] = useState(1);
   const [showProcessingScripts, setShowProcessingScripts] = useState(false);
+  const [openFoamGeometryCaseId, setOpenFoamGeometryCaseId] = useState<string | null>(null);
   const stdoutLogRef = useRef<HTMLPreElement>(null);
   const stderrLogRef = useRef<HTMLPreElement>(null);
 
@@ -111,8 +112,10 @@ export function WorkspaceShell() {
     activeCase && simulationJob?.caseId === activeCase.id && simulationJob.status === "Completed",
   );
   const flowToolsVisible = simulationPreviewActive || simulationResultVisible;
+  const openFoamGeometryVisible =
+    import.meta.env.DEV && activeCaseId !== null && openFoamGeometryCaseId === activeCaseId;
   const currentViewName = activeCase
-    ? `${simulationPreviewActive ? "Flow preview" : simulationResultVisible ? "Flow result" : "Case"} / ${activeCase.name}`
+    ? `${openFoamGeometryVisible ? "OpenFOAM geometry" : simulationPreviewActive ? "Flow preview" : simulationResultVisible ? "Flow result" : "Case"} / ${activeCase.name}`
     : "Geometry";
 
   function openSimulationLogs() {
@@ -338,6 +341,35 @@ export function WorkspaceShell() {
             </Button>
           </div>
         ) : null}
+        {import.meta.env.DEV && activeCase ? (
+          <div className="command-group command-group--debug-view is-context">
+            <span className="command-group__label">Debug view</span>
+            <Button
+              variant="ghost"
+              className={!openFoamGeometryVisible ? "is-active" : undefined}
+              aria-pressed={!openFoamGeometryVisible}
+              onClick={() => setOpenFoamGeometryCaseId(null)}
+            >
+              <span className="command-icon" aria-hidden="true">
+                ◉
+              </span>
+              Preview
+            </Button>
+            <Button
+              variant="ghost"
+              className={openFoamGeometryVisible ? "is-active" : undefined}
+              aria-pressed={openFoamGeometryVisible}
+              onClick={() => setOpenFoamGeometryCaseId(activeCase.id)}
+              disabled={!activeCase.geometryId}
+              title="Inspect the exact geometry file in OpenFOAM constant/triSurface"
+            >
+              <span className="command-icon" aria-hidden="true">
+                △
+              </span>
+              OpenFOAM geometry
+            </Button>
+          </div>
+        ) : null}
         {simulationPreviewActive ? (
           <div className="command-bar__preview" role="status" aria-live="polite">
             <span>Preview</span>
@@ -466,6 +498,7 @@ export function WorkspaceShell() {
               addProbeRequest={addProbeRequest}
               onProbeCountChange={setFlowProbeCount}
               processingScriptsOpen={showProcessingScripts}
+              showOpenFoamGeometry={openFoamGeometryVisible}
               onCreateVariant={(caseId) => startNewCase(caseId)}
               onUpAxisChange={handleUpAxisChange}
             />

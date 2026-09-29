@@ -1,9 +1,10 @@
 use crate::domain::case::{CfdSetup, SimulationCase, SimulationType, Solver};
+use crate::domain::geometry::GeometryFormat;
 use crate::domain::project::ProjectSummary;
 use crate::error::{AppError, AppResult};
 use crate::solver::openfoam::CaseValidation;
 use crate::AppState;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 use uuid::Uuid;
 
@@ -46,6 +47,14 @@ pub struct ExportCaseRequest {
     project_id: Uuid,
     case_id: Uuid,
     destination: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenFoamGeometryData {
+    file_name: String,
+    format: GeometryFormat,
+    bytes: Vec<u8>,
 }
 
 #[tauri::command]
@@ -114,6 +123,29 @@ pub fn validate_case(
         .lock()
         .map_err(|_| AppError::InternalError("project service lock was poisoned".to_owned()))?;
     service.validate_case(request.project_id, request.case_id)
+}
+
+#[tauri::command]
+pub fn get_openfoam_geometry_data(
+    request: GetCaseRequest,
+    state: State<'_, AppState>,
+) -> AppResult<OpenFoamGeometryData> {
+    if !cfg!(debug_assertions) {
+        return Err(AppError::InternalError(
+            "OpenFOAM geometry inspection is only available in debug builds.".to_owned(),
+        ));
+    }
+    let service = state
+        .project_service
+        .lock()
+        .map_err(|_| AppError::InternalError("project service lock was poisoned".to_owned()))?;
+    let (file_name, format, bytes) =
+        service.get_openfoam_geometry_data(request.project_id, request.case_id)?;
+    Ok(OpenFoamGeometryData {
+        file_name,
+        format,
+        bytes,
+    })
 }
 
 #[tauri::command]

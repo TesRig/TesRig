@@ -144,6 +144,7 @@ pub fn run() {
             commands::case::get_case,
             commands::case::update_case_setup,
             commands::case::validate_case,
+            commands::case::get_openfoam_geometry_data,
             commands::case::export_openfoam_case,
             commands::geometry::import_geometry,
             commands::geometry::get_geometry_data,

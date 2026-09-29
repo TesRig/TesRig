@@ -1813,10 +1813,15 @@ p {
   place-items: center;
 }
 
-.up-axis-control button:hover,
+.up-axis-control button:hover:not(:disabled),
 .up-axis-control button.is-active {
   background: var(--accent);
   color: var(--accent-contrast);
+}
+
+.up-axis-control button:disabled {
+  cursor: default;
+  opacity: 0.65;
 }
 
 .up-axis-control button:focus-visible {
@@ -3213,6 +3218,12 @@ p {
   color: var(--text-primary);
 }
 
+.command-group--debug-view .button.is-active {
+  border-color: rgb(114 207 255 / 45%);
+  background: rgb(114 207 255 / 12%);
+  color: #bceaff;
+}
+
 .command-icon {
   display: grid;
   width: 18px;
@@ -3275,6 +3286,142 @@ p {
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.openfoam-geometry-inspector {
+  position: absolute;
+  z-index: 5;
+  top: 52px;
+  right: 12px;
+  display: flex;
+  width: min(350px, calc(100% - 24px));
+  max-height: calc(100% - 104px);
+  flex-direction: column;
+  overflow-y: auto;
+  border: 1px solid rgb(114 207 255 / 35%);
+  border-radius: var(--radius-sm);
+  background: rgb(12 16 19 / 88%);
+  box-shadow: 0 4px 18px rgb(0 0 0 / 30%);
+}
+
+.openfoam-geometry-inspector > header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 10px 10px 12px;
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.openfoam-geometry-inspector > header > div,
+.openfoam-geometry-inspector > section {
+  display: grid;
+  gap: 1px;
+}
+
+.openfoam-geometry-inspector > section {
+  flex: 0 0 auto;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.openfoam-geometry-inspector > section:last-child {
+  border-bottom: 0;
+}
+
+.openfoam-geometry-inspector > header span,
+.openfoam-geometry-inspector > section > span {
+  color: #8fdcff;
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.openfoam-geometry-inspector > header strong,
+.openfoam-geometry-inspector > section > strong {
+  font-size: 11px;
+}
+
+.openfoam-geometry-inspector > header small,
+.openfoam-geometry-inspector > section > small {
+  color: var(--text-disabled);
+  font-size: 9px;
+}
+
+.openfoam-geometry-inspector > header button {
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.openfoam-boundary-list {
+  display: grid;
+  margin: 7px -4px -3px;
+  gap: 2px;
+}
+
+.openfoam-boundary-list button {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  text-align: left;
+}
+
+.openfoam-boundary-list button:hover,
+.openfoam-boundary-list button.is-active {
+  border-color: rgb(114 207 255 / 28%);
+  background: rgb(114 207 255 / 9%);
+}
+
+.openfoam-boundary-list i {
+  width: 7px;
+  height: 30px;
+  border-radius: 2px;
+  box-shadow: 0 0 8px rgb(255 255 255 / 14%);
+}
+
+.openfoam-boundary-list span {
+  display: grid;
+  min-width: 0;
+}
+
+.openfoam-boundary-list strong {
+  overflow: hidden;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.openfoam-boundary-list small,
+.openfoam-boundary-list em {
+  color: var(--text-disabled);
+  font-size: 8px;
+  font-style: normal;
+}
+
+.openfoam-boundary-list em {
+  max-width: 126px;
+  text-align: right;
+}
+
+.openfoam-geometry-inspector__empty .geometry-viewer__message {
+  display: grid;
+  gap: 8px;
+}
+
+.openfoam-geometry-inspector__empty .geometry-viewer__message span {
+  font-size: 11px;
 }
 
 .app-shell__body {

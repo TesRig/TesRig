@@ -27,7 +27,10 @@ import type {
   SimulationLog,
 } from "../case.types";
 import { FlowResultsViewer } from "./FlowResultsViewer";
+import { OpenFoamGeometryInspector } from "./OpenFoamGeometryInspector";
 import { ProcessingScriptsPanel } from "./ProcessingScriptsDialog";
+
+const FLOW_SNAPSHOT_REFRESH_MS = 3000;
 
 interface CaseWorkspaceProps {
   simulationCase: SimulationCase;
@@ -39,6 +42,7 @@ interface CaseWorkspaceProps {
   addProbeRequest: number;
   onProbeCountChange: (count: number) => void;
   processingScriptsOpen: boolean;
+  showOpenFoamGeometry: boolean;
 }
 
 export function CaseWorkspace({
@@ -51,6 +55,7 @@ export function CaseWorkspace({
   addProbeRequest,
   onProbeCountChange,
   processingScriptsOpen,
+  showOpenFoamGeometry,
 }: CaseWorkspaceProps) {
   const { project, syncProject } = useWorkspace();
   const [busy, setBusy] = useState(false);
@@ -171,11 +176,10 @@ export function CaseWorkspace({
       }
     };
     void refresh();
-    const active = ["Starting", "Running", "Cancelling"].includes(jobStatus);
-    const interval = active ? window.setInterval(() => void refresh(), 3000) : undefined;
+    const interval = window.setInterval(() => void refresh(), FLOW_SNAPSHOT_REFRESH_MS);
     return () => {
       disposed = true;
-      if (interval !== undefined) window.clearInterval(interval);
+      window.clearInterval(interval);
     };
   }, [jobId, jobStatus, showFlowView]);
   const selectSurface = useCallback((surface: string) => setSelectedSurface(surface), []);
@@ -347,7 +351,14 @@ export function CaseWorkspace({
 
   return (
     <section className="geometry-editor case-editor">
-      {geometry ? (
+      {showOpenFoamGeometry && project ? (
+        <OpenFoamGeometryInspector
+          projectId={project.id}
+          caseId={simulationCase.id}
+          setup={simulationCase.cfdSetup}
+          upAxis={project.settings.upAxis}
+        />
+      ) : geometry ? (
         showFlowView ? (
           <FlowResultsViewer
             projectId={project!.id}
