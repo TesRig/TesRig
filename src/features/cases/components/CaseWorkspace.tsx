@@ -59,6 +59,7 @@ export function CaseWorkspace({
   const [runtime, setRuntime] = useState<OpenFoamRuntimeStatus | null>(null);
   const [job, setJob] = useState<SimulationJob | null>(null);
   const [flowSnapshot, setFlowSnapshot] = useState<FlowSnapshot | null>(null);
+  const [flowSnapshotSyncing, setFlowSnapshotSyncing] = useState(false);
   const [showFlowView, setShowFlowView] = useState(false);
   const geometry = project?.geometries.find(({ id }) => id === simulationCase.geometryId);
   const sourceCase = project?.cases.find(({ id }) => id === simulationCase.variantOfCaseId);
@@ -170,6 +171,23 @@ export function CaseWorkspace({
     };
   }, [jobId, jobStatus, showFlowView]);
   const selectSurface = useCallback((surface: string) => setSelectedSurface(surface), []);
+
+  const syncFlowSnapshot = useCallback(async () => {
+    setFlowSnapshotSyncing(true);
+    try {
+      const next = await getFlowSnapshot();
+      if (next) {
+        setFlowSnapshot(next);
+        onStatus(`Airflow preview synced to t = ${next.time.toPrecision(4)}.`);
+      } else {
+        onStatus("No complete OpenFOAM field is available to preview yet.", true);
+      }
+    } catch (error) {
+      onStatus(toUserMessage(error), true);
+    } finally {
+      setFlowSnapshotSyncing(false);
+    }
+  }, [onStatus]);
 
   async function handleImport() {
     if (!project) return;
@@ -335,6 +353,8 @@ export function CaseWorkspace({
             onUpAxisChange={onUpAxisChange}
             addProbeRequest={addProbeRequest}
             onProbeCountChange={onProbeCountChange}
+            onSyncPreview={syncFlowSnapshot}
+            previewSyncing={flowSnapshotSyncing}
             leftPanel={processingScriptsPanel}
           >
             {setupPanel}

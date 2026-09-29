@@ -15,6 +15,8 @@ type SliceField = "pressure" | "velocity";
 interface ProbeSettings {
   id: string;
   color: number;
+  lowPressureColor: number;
+  highPressureColor: number;
   visible: boolean;
   kind: ProbeKind;
   density: number;
@@ -24,6 +26,9 @@ interface ProbeSettings {
   sliceAxis: 0 | 1 | 2;
   slicePosition: number;
   sliceField: SliceField;
+  position: [number, number, number];
+  lineStart: [number, number, number] | null;
+  lineEnd: [number, number, number] | null;
 }
 
 interface FlowResultsViewerProps {
@@ -38,6 +43,8 @@ interface FlowResultsViewerProps {
   onUpAxisChange: (upAxis: UpAxis) => void;
   addProbeRequest: number;
   onProbeCountChange: (count: number) => void;
+  onSyncPreview: () => Promise<void>;
+  previewSyncing: boolean;
   leftPanel?: ReactNode;
   children?: ReactNode;
 }
@@ -74,9 +81,14 @@ const DOMAIN_FACES = [
 ] as const;
 
 function createProbe(index: number, kind: ProbeKind = index === 0 ? "connections" : "line") {
+  const color = PROBE_COLORS[index % PROBE_COLORS.length];
+  const lowPressureColor = new THREE.Color(color).lerp(new THREE.Color(0xffffff), 0.68).getHex();
+  const highPressureColor = new THREE.Color(color).multiplyScalar(0.32).getHex();
   return {
     id: `probe-${Date.now()}-${index}`,
-    color: PROBE_COLORS[index % PROBE_COLORS.length],
+    color,
+    lowPressureColor,
+    highPressureColor,
     visible: true,
     kind,
     density: 1.2,
@@ -86,6 +98,9 @@ function createProbe(index: number, kind: ProbeKind = index === 0 ? "connections
     sliceAxis: 0 as const,
     slicePosition: 0.5,
     sliceField: "pressure" as const,
+    position: [0.5, 0.5, 0.5],
+    lineStart: null,
+    lineEnd: null,
   } satisfies ProbeSettings;
 }
 
@@ -93,12 +108,6 @@ const PROBE_OPTIONS = listFlowVisualizationExtensions().filter(
   (extension): extension is typeof extension & { id: ProbeKind } =>
     ["domain", "line", "point", "connections", "surface", "slice"].includes(extension.id),
 );
-
-function finiteVelocity(snapshot: FlowSnapshot | null, fallback: [number, number, number]) {
-  const velocity = snapshot?.velocityMean ?? fallback;
-  const vector = new THREE.Vector3(...velocity);
-  return vector.lengthSq() > 1e-12 ? vector : new THREE.Vector3(1, 0, 0);
-}
 
 function cardinalDirection(velocity: THREE.Vector3) {
   const components = velocity.toArray().map(Math.abs);
@@ -108,22 +117,79 @@ function cardinalDirection(velocity: THREE.Vector3) {
   return direction;
 }
 
-function connectionDirection(setup: CfdSetup) {
+interface DomainFace {
+  axis: 0 | 1 | 2;
+  side: "min" | "max";
+}
+
+function parseDomainFace(surface: string): DomainFace | null {
+  const match = surface.match(/^domain:([xyz])(Min|Max)$/);
+  if (!match) return null;
+  return {
+    axis: { x: 0, y: 1, z: 2 }[match[1] as "x" | "y" | "z"] as 0 | 1 | 2,
+    side: match[2] === "Min" ? "min" : "max",
+  };
+}
+
+function inletFace(setup: CfdSetup): DomainFace | null {
   const inlet = setup.boundaries.find(
     ({ boundaryType, surface }) => boundaryType === "Inlet" && surface.startsWith("domain:"),
   );
+  return inlet ? parseDomainFace(inlet.surface) : null;
+}
+
+function connectionDirection(setup: CfdSetup) {
+  const inlet = inletFace(setup);
   if (!inlet) return cardinalDirection(new THREE.Vector3(...setup.initialConditions.velocity));
-  const match = inlet.surface.match(/^domain:([xyz])(Min|Max)$/);
-  if (!match) return cardinalDirection(new THREE.Vector3(...setup.initialConditions.velocity));
-  const axis = { x: 0, y: 1, z: 2 }[match[1] as "x" | "y" | "z"];
   const direction = new THREE.Vector3();
-  direction.setComponent(axis, match[2] === "Min" ? 1 : -1);
+  direction.setComponent(inlet.axis, inlet.side === "min" ? 1 : -1);
   return direction;
+}
+
+function normalizedPoint(point: [number, number, number], bounds: THREE.Box3) {
+  const size = bounds.getSize(new THREE.Vector3());
+  return new THREE.Vector3(
+    bounds.min.x + size.x * point[0],
+    bounds.min.y + size.y * point[1],
+    bounds.min.z + size.z * point[2],
+  );
+}
+
+function pointToNormalized(point: THREE.Vector3, bounds: THREE.Box3): [number, number, number] {
+  const size = bounds.getSize(new THREE.Vector3());
+  return [
+    THREE.MathUtils.clamp((point.x - bounds.min.x) / Math.max(size.x, 1e-9), 0, 1),
+    THREE.MathUtils.clamp((point.y - bounds.min.y) / Math.max(size.y, 1e-9), 0, 1),
+    THREE.MathUtils.clamp((point.z - bounds.min.z) / Math.max(size.z, 1e-9), 0, 1),
+  ];
+}
+
+function radicalInverse(index: number, base: number) {
+  let result = 0;
+  let fraction = 1 / base;
+  while (index > 0) {
+    result += (index % base) * fraction;
+    index = Math.floor(index / base);
+    fraction /= base;
+  }
+  return result;
+}
+
+function distributedPair(index: number, probeIndex: number) {
+  // Halton bases 2 and 3 avoid the diagonal correlation in the old golden-ratio pair.
+  return [
+    (radicalInverse(index + 1, 2) + probeIndex * 0.173) % 1,
+    (radicalInverse(index + 1, 3) + probeIndex * 0.317) % 1,
+  ] as const;
 }
 
 function heatColor(value: number) {
   const normalized = THREE.MathUtils.clamp(value, 0, 1);
   return new THREE.Color().setHSL((1 - normalized) * 0.64, 0.88, 0.56);
+}
+
+function colorHex(color: number) {
+  return `#${color.toString(16).padStart(6, "0")}`;
 }
 
 function setSurfacePressure(model: THREE.Object3D, enabled: boolean, direction: THREE.Vector3) {
@@ -247,74 +313,116 @@ function probeMetric(settings: ProbeSettings, bounds: THREE.Box3, flowAxis: numb
   const size = bounds.getSize(new THREE.Vector3());
   const crossAxes = [0, 1, 2].filter((axis) => axis !== flowAxis);
   if (settings.kind === "point") return (4 / 3) * Math.PI * settings.radius ** 3;
+  if (settings.kind === "line") {
+    const { start, end } = defaultLinePoints(settings, bounds, flowAxis, 1);
+    return Math.max(start.distanceTo(end), 1e-6);
+  }
   if (settings.kind === "surface")
-    return Math.max(size.getComponent(crossAxes[0]) * settings.normalDistance, 1e-6);
+    return Math.max(size.getComponent(crossAxes[0]) * size.getComponent(crossAxes[1]), 1e-6);
   return Math.max(size.getComponent(crossAxes[0]) * size.getComponent(crossAxes[1]), 1e-6);
 }
 
-function seedPoints(settings: ProbeSettings, bounds: THREE.Box3, direction: THREE.Vector3) {
+function defaultLinePoints(
+  settings: ProbeSettings,
+  bounds: THREE.Box3,
+  flowAxis: number,
+  flowSign: number,
+) {
+  const crossAxes = [0, 1, 2].filter((axis) => axis !== flowAxis);
+  const start = [0.5, 0.5, 0.5] as [number, number, number];
+  const end = [0.5, 0.5, 0.5] as [number, number, number];
+  start[flowAxis] = flowSign > 0 ? 0 : 1;
+  end[flowAxis] = start[flowAxis];
+  start[crossAxes[0]] = 0.15;
+  end[crossAxes[0]] = 0.85;
+  return {
+    start: normalizedPoint(settings.lineStart ?? start, bounds),
+    end: normalizedPoint(settings.lineEnd ?? end, bounds),
+  };
+}
+
+function seedPoints(
+  settings: ProbeSettings,
+  bounds: THREE.Box3,
+  direction: THREE.Vector3,
+  probeIndex: number,
+) {
   const size = bounds.getSize(new THREE.Vector3());
   const center = bounds.getCenter(new THREE.Vector3());
   const components = direction.toArray().map(Math.abs);
   const flowAxis = components.indexOf(Math.max(...components));
   const crossAxes = [0, 1, 2].filter((axis) => axis !== flowAxis);
   const metric = probeMetric(settings, bounds, flowAxis);
-  const count = THREE.MathUtils.clamp(Math.round(settings.density * metric), 5, 64);
+  const minimum = ["domain", "connections", "surface", "slice"].includes(settings.kind) ? 12 : 5;
+  const count = THREE.MathUtils.clamp(Math.round(settings.density * metric), minimum, 96);
   const seeds: THREE.Vector3[] = [];
   const flowSign = direction.getComponent(flowAxis) >= 0 ? 1 : -1;
   const upstream =
     flowSign > 0 ? bounds.min.getComponent(flowAxis) : bounds.max.getComponent(flowAxis);
+  const line = defaultLinePoints(settings, bounds, flowAxis, flowSign);
+  const probeCenter = normalizedPoint(settings.position, bounds);
+  const sliceCoordinate =
+    bounds.min.getComponent(settings.sliceAxis) +
+    size.getComponent(settings.sliceAxis) * settings.slicePosition;
 
   for (let index = 0; index < count; index += 1) {
     const point = center.clone();
     point.setComponent(flowAxis, upstream);
-    const u = ((index * 0.61803398875) % 1) - 0.5;
-    const v = ((index * 0.38196601125 + 0.31) % 1) - 0.5;
+    const [u, v] = distributedPair(index, probeIndex);
     if (settings.kind === "line") {
-      point.setComponent(
-        crossAxes[0],
-        center.getComponent(crossAxes[0]) + u * size.getComponent(crossAxes[0]),
-      );
-      point.setComponent(crossAxes[1], center.getComponent(crossAxes[1]));
+      point.copy(line.start).lerp(line.end, count <= 1 ? 0.5 : index / (count - 1));
     } else if (settings.kind === "point") {
-      const angle = index * 2.399963;
-      const radial = settings.radius * Math.sqrt((index + 0.5) / count);
-      point.copy(center);
-      point.setComponent(
-        crossAxes[0],
-        center.getComponent(crossAxes[0]) + Math.cos(angle) * radial,
+      const azimuth = Math.PI * 2 * u;
+      const z = v * 2 - 1;
+      const radial = settings.radius * Math.cbrt((index + 0.5) / count);
+      const planar = Math.sqrt(Math.max(0, 1 - z * z));
+      point.copy(probeCenter);
+      point.add(
+        new THREE.Vector3(
+          Math.cos(azimuth) * planar * radial,
+          Math.sin(azimuth) * planar * radial,
+          z * radial,
+        ),
       );
-      point.setComponent(
-        crossAxes[1],
-        center.getComponent(crossAxes[1]) + Math.sin(angle) * radial,
-      );
-      point.setComponent(flowAxis, center.getComponent(flowAxis) - flowSign * settings.radius);
     } else if (settings.kind === "surface") {
+      point.copy(center);
       point.setComponent(
         flowAxis,
         center.getComponent(flowAxis) - flowSign * settings.normalDistance,
       );
       point.setComponent(
         crossAxes[0],
-        center.getComponent(crossAxes[0]) + u * size.getComponent(crossAxes[0]) * 0.45,
+        bounds.min.getComponent(crossAxes[0]) + u * size.getComponent(crossAxes[0]),
       );
       point.setComponent(
         crossAxes[1],
-        center.getComponent(crossAxes[1]) + v * size.getComponent(crossAxes[1]) * 0.45,
+        bounds.min.getComponent(crossAxes[1]) + v * size.getComponent(crossAxes[1]),
+      );
+    } else if (settings.kind === "slice") {
+      point.copy(bounds.min);
+      const planeAxes = [0, 1, 2].filter((axis) => axis !== settings.sliceAxis);
+      point.setComponent(settings.sliceAxis, sliceCoordinate);
+      point.setComponent(
+        planeAxes[0],
+        bounds.min.getComponent(planeAxes[0]) + u * size.getComponent(planeAxes[0]),
+      );
+      point.setComponent(
+        planeAxes[1],
+        bounds.min.getComponent(planeAxes[1]) + v * size.getComponent(planeAxes[1]),
       );
     } else {
       point.setComponent(
         crossAxes[0],
-        center.getComponent(crossAxes[0]) + u * size.getComponent(crossAxes[0]) * 0.9,
+        bounds.min.getComponent(crossAxes[0]) + u * size.getComponent(crossAxes[0]),
       );
       point.setComponent(
         crossAxes[1],
-        center.getComponent(crossAxes[1]) + v * size.getComponent(crossAxes[1]) * 0.9,
+        bounds.min.getComponent(crossAxes[1]) + v * size.getComponent(crossAxes[1]),
       );
     }
     seeds.push(point);
   }
-  return { seeds, flowAxis, crossAxes, metric, flowSign };
+  return { seeds, flowAxis, crossAxes, metric, flowSign, line, probeCenter };
 }
 
 function visibleFlowBounds(state: SceneState, direction: THREE.Vector3) {
@@ -394,9 +502,75 @@ function addSlice(state: SceneState, settings: ProbeSettings, bounds: THREE.Box3
   state.sliceGroup.add(plane);
 }
 
+function addProbeHandle(
+  state: SceneState,
+  settings: ProbeSettings,
+  position: THREE.Vector3,
+  handle: "lineStart" | "lineEnd" | "position" | "slice",
+  characteristic: number,
+) {
+  const mesh = new THREE.Mesh(
+    new THREE.SphereGeometry(characteristic * 0.035, 18, 12),
+    new THREE.MeshBasicMaterial({
+      color: settings.color,
+      depthTest: false,
+      transparent: true,
+      opacity: 0.95,
+    }),
+  );
+  mesh.position.copy(position);
+  mesh.renderOrder = 20;
+  mesh.userData.tesrigProbeId = settings.id;
+  mesh.userData.tesrigProbeHandle = handle;
+  state.flowGroup.add(mesh);
+}
+
+function addProbeGuide(
+  state: SceneState,
+  settings: ProbeSettings,
+  line: { start: THREE.Vector3; end: THREE.Vector3 },
+  probeCenter: THREE.Vector3,
+  bounds: THREE.Box3,
+  characteristic: number,
+) {
+  if (settings.kind === "line") {
+    const guide = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([line.start, line.end]),
+      new THREE.LineBasicMaterial({ color: settings.color, opacity: 0.95, transparent: true }),
+    );
+    state.flowGroup.add(guide);
+    addProbeHandle(state, settings, line.start, "lineStart", characteristic);
+    addProbeHandle(state, settings, line.end, "lineEnd", characteristic);
+  } else if (settings.kind === "point") {
+    const sphere = new THREE.Mesh(
+      new THREE.SphereGeometry(settings.radius, 24, 16),
+      new THREE.MeshBasicMaterial({
+        color: settings.color,
+        transparent: true,
+        opacity: 0.08,
+        wireframe: true,
+        depthWrite: false,
+      }),
+    );
+    sphere.position.copy(probeCenter);
+    state.flowGroup.add(sphere);
+    addProbeHandle(state, settings, probeCenter, "position", characteristic);
+  } else if (settings.kind === "slice") {
+    const center = bounds.getCenter(new THREE.Vector3());
+    const size = bounds.getSize(new THREE.Vector3());
+    center.setComponent(
+      settings.sliceAxis,
+      bounds.min.getComponent(settings.sliceAxis) +
+        size.getComponent(settings.sliceAxis) * settings.slicePosition,
+    );
+    addProbeHandle(state, settings, center, "slice", characteristic);
+  }
+}
+
 function rebuildFlow(
   state: SceneState,
   probes: ProbeSettings[],
+  activeProbeId: string,
   snapshot: FlowSnapshot | null,
   setup: CfdSetup,
   selectedSurface: string | null,
@@ -404,34 +578,41 @@ function rebuildFlow(
   disposeGroup(state.flowGroup);
   disposeGroup(state.sliceGroup);
   state.particleSets.length = 0;
-  const sourceDirection = finiteVelocity(snapshot, setup.initialConditions.velocity);
+  const sourceDirection = connectionDirection(setup);
   const modelCenter = state.modelBounds.getCenter(new THREE.Vector3());
   const modelSize = state.modelBounds.getSize(new THREE.Vector3());
   const characteristic = Math.max(modelSize.x, modelSize.y, modelSize.z, 1e-6);
+  const pressureSpan = snapshot?.pressure
+    ? snapshot.pressure.maximum - snapshot.pressure.minimum
+    : 0;
+  const pressureBaseline =
+    snapshot?.pressure && pressureSpan > 1e-12
+      ? THREE.MathUtils.clamp(
+          (snapshot.pressure.mean - snapshot.pressure.minimum) / pressureSpan,
+          0,
+          1,
+        )
+      : 0.5;
 
   probes
     .filter(({ visible }) => visible)
     .forEach((settings, probeIndex) => {
-      const direction = (
-        settings.kind === "connections" ? connectionDirection(setup) : sourceDirection
-      )
+      const direction = sourceDirection
         .clone()
         .normalize()
-        .multiplyScalar(settings.reverse ? -1 : 1);
+        .multiplyScalar(settings.kind === "connections" && settings.reverse ? -1 : 1);
       const pathBounds = visibleFlowBounds(state, direction);
-      if (settings.kind === "connections") {
-        const components = direction.toArray().map(Math.abs);
-        const connectionAxis = components.indexOf(Math.max(...components));
-        pathBounds.min.setComponent(
-          connectionAxis,
-          state.displayDomain.min.getComponent(connectionAxis),
-        );
-        pathBounds.max.setComponent(
-          connectionAxis,
-          state.displayDomain.max.getComponent(connectionAxis),
-        );
-      }
-      let seedBounds = pathBounds;
+      const components = direction.toArray().map(Math.abs);
+      const connectionAxis = components.indexOf(Math.max(...components));
+      pathBounds.min.setComponent(
+        connectionAxis,
+        state.displayDomain.min.getComponent(connectionAxis),
+      );
+      pathBounds.max.setComponent(
+        connectionAxis,
+        state.displayDomain.max.getComponent(connectionAxis),
+      );
+      let seedBounds = state.displayDomain;
       if (settings.kind === "surface" && selectedSurface) {
         state.model.traverse((object) => {
           if (object.userData.tesrigSurface === selectedSurface) {
@@ -439,10 +620,27 @@ function rebuildFlow(
             if (!surfaceBounds.isEmpty()) seedBounds = surfaceBounds;
           }
         });
+      } else if (settings.kind === "surface") {
+        seedBounds = state.modelBounds;
       }
-      const { seeds, flowAxis, crossAxes, flowSign } = seedPoints(settings, seedBounds, direction);
+      const { seeds, flowAxis, crossAxes, flowSign, line, probeCenter } = seedPoints(
+        settings,
+        seedBounds,
+        direction,
+        probeIndex,
+      );
       const pathSize = pathBounds.getSize(new THREE.Vector3());
-      const length = pathSize.getComponent(flowAxis);
+      const pathLength = pathSize.getComponent(flowAxis);
+      const physicalFlowSign = sourceDirection.getComponent(flowAxis) >= 0 ? 1 : -1;
+      const physicalInletCoordinate =
+        physicalFlowSign > 0
+          ? state.displayDomain.min.getComponent(flowAxis)
+          : state.displayDomain.max.getComponent(flowAxis);
+      const physicalFlowLength = Math.max(
+        state.displayDomain.max.getComponent(flowAxis) -
+          state.displayDomain.min.getComponent(flowAxis),
+        1e-9,
+      );
       const inletCoordinate =
         flowSign > 0
           ? pathBounds.min.getComponent(flowAxis)
@@ -458,20 +656,33 @@ function rebuildFlow(
       const straightFraction = settings.kind === "connections" ? 0.9 : 0.68;
       const bendStart = inletCoordinate + flowSign * inletToModel * straightFraction;
       const bendDistance = Math.max(inletToModel * (1 - straightFraction), characteristic * 0.04);
-      if (settings.kind === "slice") addSlice(state, settings, pathBounds);
+      if (settings.kind === "slice") addSlice(state, settings, state.displayDomain);
+      if (settings.id === activeProbeId) {
+        addProbeGuide(state, settings, line, probeCenter, state.displayDomain, characteristic);
+      }
 
       const curves: THREE.CatmullRomCurve3[] = [];
+      const lowPressureColor = new THREE.Color(settings.lowPressureColor);
+      const highPressureColor = new THREE.Color(settings.highPressureColor);
+      const pressureColor = new THREE.Color();
       seeds.forEach((seed, index) => {
+        const startCoordinate = ["domain", "connections"].includes(settings.kind)
+          ? inletCoordinate
+          : THREE.MathUtils.clamp(
+              seed.getComponent(flowAxis),
+              pathBounds.min.getComponent(flowAxis),
+              pathBounds.max.getComponent(flowAxis),
+            );
+        const outletCoordinate =
+          flowSign > 0
+            ? pathBounds.max.getComponent(flowAxis)
+            : pathBounds.min.getComponent(flowAxis);
+        const length = Math.max((outletCoordinate - startCoordinate) * flowSign, pathLength * 0.01);
         const curvePoints: THREE.Vector3[] = [];
         for (let step = 0; step <= 48; step += 1) {
           const t = step / 48;
           const point = seed.clone();
-          point.setComponent(
-            flowAxis,
-            flowSign > 0
-              ? pathBounds.min.getComponent(flowAxis) + length * t
-              : pathBounds.max.getComponent(flowAxis) - length * t,
-          );
+          point.setComponent(flowAxis, startCoordinate + flowSign * length * t);
           const along = point.getComponent(flowAxis) - modelCenter.getComponent(flowAxis);
           const flowExtent = Math.max(modelSize.getComponent(flowAxis), characteristic * 0.28);
           const bendProgress = THREE.MathUtils.smoothstep(
@@ -502,13 +713,49 @@ function rebuildFlow(
         }
         const curve = new THREE.CatmullRomCurve3(curvePoints);
         curves.push(curve);
-        const geometry = new THREE.BufferGeometry().setFromPoints(curve.getPoints(110));
-        const fraction = seeds.length <= 1 ? 0.5 : index / (seeds.length - 1);
-        const color = new THREE.Color(settings.color).lerp(heatColor(fraction), 0.18);
+        const renderedPoints = curve.getPoints(110);
+        const geometry = new THREE.BufferGeometry().setFromPoints(renderedPoints);
+        const colors = new Float32Array(renderedPoints.length * 3);
+        renderedPoints.forEach((point, pointIndex) => {
+          const physicalProgress = THREE.MathUtils.clamp(
+            ((point.getComponent(flowAxis) - physicalInletCoordinate) * physicalFlowSign) /
+              physicalFlowLength,
+            0,
+            1,
+          );
+          const axialDistance =
+            ((point.getComponent(flowAxis) - modelCenter.getComponent(flowAxis)) *
+              physicalFlowSign) /
+            Math.max(modelSize.getComponent(flowAxis), characteristic * 0.28);
+          const crossDistance = Math.sqrt(
+            crossAxes.reduce((sum, axis) => {
+              const halfExtent = Math.max(
+                modelSize.getComponent(axis) * 0.56,
+                characteristic * 0.08,
+              );
+              const relative =
+                (point.getComponent(axis) - modelCenter.getComponent(axis)) / halfExtent;
+              return sum + relative * relative;
+            }, 0),
+          );
+          const nearBody = Math.exp(-axialDistance * axialDistance * 1.8 - crossDistance * 0.9);
+          const stagnation = axialDistance <= 0 ? nearBody * 0.32 : 0;
+          const wakeDrop = axialDistance > 0 ? nearBody * 0.36 : 0;
+          const pressure = THREE.MathUtils.clamp(
+            pressureBaseline + 0.18 - physicalProgress * 0.36 + stagnation - wakeDrop,
+            0,
+            1,
+          );
+          pressureColor.copy(lowPressureColor).lerp(highPressureColor, pressure);
+          colors[pointIndex * 3] = pressureColor.r;
+          colors[pointIndex * 3 + 1] = pressureColor.g;
+          colors[pointIndex * 3 + 2] = pressureColor.b;
+        });
+        geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
         const line = new THREE.Line(
           geometry,
           new THREE.LineBasicMaterial({
-            color,
+            vertexColors: true,
             transparent: true,
             opacity: settings.kind === "slice" ? 0.82 : 0.58,
             depthWrite: false,
@@ -562,6 +809,8 @@ export function FlowResultsViewer({
   onUpAxisChange,
   addProbeRequest,
   onProbeCountChange,
+  onSyncPreview,
+  previewSyncing,
   leftPanel,
   children,
 }: FlowResultsViewerProps) {
@@ -575,11 +824,22 @@ export function FlowResultsViewer({
   const [activeProbeId, setActiveProbeId] = useState(() => probes[0].id);
   const handledAddProbeRequest = useRef(addProbeRequest);
   const probeSequence = useRef(1);
+  const probesRef = useRef(probes);
+  const setupRef = useRef(setup);
+  const activeProbeIdRef = useRef(activeProbeId);
+  const selectedSurfaceRef = useRef(selectedSurface);
+  const showPressureRef = useRef(showPressure);
+  const snapshotRef = useRef(snapshot);
+  const flowDirectionRef = useRef(new THREE.Vector3(1, 0, 0));
   const settings = probes.find(({ id }) => id === activeProbeId) ?? probes[0];
-  const flowDirection = useMemo(
-    () => finiteVelocity(snapshot, setup.initialConditions.velocity),
-    [setup.initialConditions.velocity, snapshot],
-  );
+  const flowDirection = useMemo(() => connectionDirection(setup), [setup]);
+  probesRef.current = probes;
+  setupRef.current = setup;
+  activeProbeIdRef.current = activeProbeId;
+  selectedSurfaceRef.current = selectedSurface;
+  showPressureRef.current = showPressure;
+  snapshotRef.current = snapshot;
+  flowDirectionRef.current = flowDirection;
 
   function updateActiveProbe(update: (current: ProbeSettings) => ProbeSettings) {
     setProbes((current) =>
@@ -688,8 +948,169 @@ export function FlowResultsViewer({
       if (hit) onSurfaceSelect(hit.object.userData.tesrigSurface as string);
     };
     let pointerStart: { x: number; y: number } | null = null;
-    const rememberPointer = (event: PointerEvent) => {
-      pointerStart = { x: event.clientX, y: event.clientY };
+    let drag:
+      | {
+          probeId: string;
+          handle: "lineStart" | "lineEnd" | "position" | "slice";
+          plane: THREE.Plane | null;
+          faceAxis: number | null;
+          faceCoordinate: number | null;
+        }
+      | undefined;
+    const beginPointer = (event: PointerEvent) => {
+      setPointer(event);
+      const handleHit = raycaster
+        .intersectObjects(flowGroup.children, true)
+        .find(({ object }) => typeof object.userData.tesrigProbeHandle === "string");
+      if (!handleHit) {
+        pointerStart = { x: event.clientX, y: event.clientY };
+        return;
+      }
+
+      const probeId = handleHit.object.userData.tesrigProbeId as string;
+      const handle = handleHit.object.userData.tesrigProbeHandle as
+        "lineStart" | "lineEnd" | "position" | "slice";
+      const probe = probesRef.current.find(({ id }) => id === probeId);
+      const state = sceneRef.current;
+      if (!probe || !state) return;
+
+      let plane: THREE.Plane | null = null;
+      let faceAxis: number | null = null;
+      let faceCoordinate: number | null = null;
+      if (handle === "lineStart" || handle === "lineEnd") {
+        const direction = connectionDirection(setupRef.current);
+        const flowAxis = direction
+          .toArray()
+          .map(Math.abs)
+          .indexOf(Math.max(...direction.toArray().map(Math.abs)));
+        const flowSign = direction.getComponent(flowAxis) >= 0 ? 1 : -1;
+        const defaults = defaultLinePoints(probe, state.displayDomain, flowAxis, flowSign);
+        const point = handle === "lineStart" ? defaults.start : defaults.end;
+        const normalized = pointToNormalized(point, state.displayDomain);
+        let nearestDistance = Number.POSITIVE_INFINITY;
+        for (let axis = 0; axis < 3; axis += 1) {
+          const minDistance = normalized[axis];
+          const maxDistance = 1 - normalized[axis];
+          if (minDistance < nearestDistance) {
+            nearestDistance = minDistance;
+            faceAxis = axis;
+            faceCoordinate = state.displayDomain.min.getComponent(axis);
+          }
+          if (maxDistance < nearestDistance) {
+            nearestDistance = maxDistance;
+            faceAxis = axis;
+            faceCoordinate = state.displayDomain.max.getComponent(axis);
+          }
+        }
+        const normal = new THREE.Vector3().setComponent(faceAxis ?? flowAxis, 1);
+        plane = new THREE.Plane(normal, -(faceCoordinate ?? point.getComponent(flowAxis)));
+      } else if (handle === "position") {
+        const normal = camera.getWorldDirection(new THREE.Vector3());
+        plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, handleHit.point);
+      }
+
+      drag = { probeId, handle, plane, faceAxis, faceCoordinate };
+      setActiveProbeId(probeId);
+      pointerStart = null;
+      controls.enabled = false;
+      renderer.domElement.style.cursor = "grabbing";
+      renderer.domElement.setPointerCapture(event.pointerId);
+      event.preventDefault();
+      event.stopPropagation();
+    };
+
+    const dragPointer = (event: PointerEvent) => {
+      if (!drag) {
+        setPointer(event);
+        const overHandle = raycaster
+          .intersectObjects(flowGroup.children, true)
+          .some(({ object }) => typeof object.userData.tesrigProbeHandle === "string");
+        renderer.domElement.style.cursor = overHandle ? "grab" : "";
+        return;
+      }
+      const state = sceneRef.current;
+      const probe = probesRef.current.find(({ id }) => id === drag?.probeId);
+      if (!state || !probe) return;
+      setPointer(event);
+
+      if (drag.handle === "slice") {
+        const center = state.displayDomain.getCenter(new THREE.Vector3());
+        const from = center.clone();
+        const to = center.clone();
+        from.setComponent(probe.sliceAxis, state.displayDomain.min.getComponent(probe.sliceAxis));
+        to.setComponent(probe.sliceAxis, state.displayDomain.max.getComponent(probe.sliceAxis));
+        const pointOnRay = new THREE.Vector3();
+        const pointOnAxis = new THREE.Vector3();
+        raycaster.ray.distanceSqToSegment(from, to, pointOnRay, pointOnAxis);
+        const span = Math.max(
+          to.getComponent(probe.sliceAxis) - from.getComponent(probe.sliceAxis),
+          1e-9,
+        );
+        const slicePosition = THREE.MathUtils.clamp(
+          (pointOnAxis.getComponent(probe.sliceAxis) - from.getComponent(probe.sliceAxis)) / span,
+          0,
+          1,
+        );
+        setProbes((current) =>
+          current.map((item) => (item.id === drag?.probeId ? { ...item, slicePosition } : item)),
+        );
+      } else if (drag.plane) {
+        const point = raycaster.ray.intersectPlane(drag.plane, new THREE.Vector3());
+        if (!point) return;
+        state.displayDomain.clampPoint(point, point);
+
+        if (drag.handle === "lineStart" || drag.handle === "lineEnd") {
+          const lineHandle = drag.handle;
+          if (drag.faceAxis !== null && drag.faceCoordinate !== null) {
+            point.setComponent(drag.faceAxis, drag.faceCoordinate);
+          }
+          const direction = connectionDirection(setupRef.current);
+          const flowAxis = direction
+            .toArray()
+            .map(Math.abs)
+            .indexOf(Math.max(...direction.toArray().map(Math.abs)));
+          const flowSign = direction.getComponent(flowAxis) >= 0 ? 1 : -1;
+          const defaults = defaultLinePoints(probe, state.displayDomain, flowAxis, flowSign);
+          const other = drag.handle === "lineStart" ? defaults.end : defaults.start;
+          const size = state.displayDomain.getSize(new THREE.Vector3());
+          const candidateAxes = [0, 1, 2].filter((axis) => axis !== drag?.faceAxis);
+          const snapAxis = candidateAxes
+            .map((axis) => ({
+              axis,
+              distance:
+                Math.abs(point.getComponent(axis) - other.getComponent(axis)) /
+                Math.max(size.getComponent(axis), 1e-9),
+            }))
+            .sort((left, right) => left.distance - right.distance)[0];
+          if (snapAxis && snapAxis.distance <= 0.06) {
+            point.setComponent(snapAxis.axis, other.getComponent(snapAxis.axis));
+          }
+          const normalized = pointToNormalized(point, state.displayDomain);
+          setProbes((current) =>
+            current.map((item) =>
+              item.id === drag?.probeId ? { ...item, [lineHandle]: normalized } : item,
+            ),
+          );
+        } else {
+          const position = pointToNormalized(point, state.displayDomain);
+          setProbes((current) =>
+            current.map((item) => (item.id === drag?.probeId ? { ...item, position } : item)),
+          );
+        }
+      }
+      event.preventDefault();
+    };
+
+    const endPointer = (event: PointerEvent) => {
+      if (!drag) return;
+      drag = undefined;
+      pointerStart = null;
+      controls.enabled = true;
+      renderer.domElement.style.cursor = "";
+      if (renderer.domElement.hasPointerCapture(event.pointerId)) {
+        renderer.domElement.releasePointerCapture(event.pointerId);
+      }
+      event.preventDefault();
     };
     const selectDomainFace = (event: PointerEvent) => {
       if (
@@ -708,8 +1129,11 @@ export function FlowResultsViewer({
       if (hit) onSurfaceSelect(hit.object.userData.tesrigBoundaryFace as string);
     };
     renderer.domElement.addEventListener("dblclick", selectAtPointer);
-    renderer.domElement.addEventListener("pointerdown", rememberPointer);
+    renderer.domElement.addEventListener("pointerdown", beginPointer);
+    renderer.domElement.addEventListener("pointermove", dragPointer);
     renderer.domElement.addEventListener("pointerup", selectDomainFace);
+    renderer.domElement.addEventListener("pointerup", endPointer);
+    renderer.domElement.addEventListener("pointercancel", endPointer);
 
     void getGeometryData(projectId, geometry.id)
       .then(({ bytes }) => createGeometryModel(geometry, Uint8Array.from(bytes)))
@@ -730,7 +1154,7 @@ export function FlowResultsViewer({
         model.updateMatrixWorld(true);
         const modelBounds = new THREE.Box3().setFromObject(model);
         const offset = model.position;
-        const box = setup.boundaryBox ?? {
+        const box = setupRef.current.boundaryBox ?? {
           min: rawBounds.min.toArray() as [number, number, number],
           max: rawBounds.max.toArray() as [number, number, number],
         };
@@ -739,7 +1163,7 @@ export function FlowResultsViewer({
           new THREE.Vector3(...box.max).add(offset),
         );
         addDomainBox(domainGroup, displayDomain);
-        setDomainSelection(domainGroup, selectedSurface);
+        setDomainSelection(domainGroup, selectedSurfaceRef.current);
         const state: SceneState = {
           scene,
           model,
@@ -756,7 +1180,7 @@ export function FlowResultsViewer({
         };
         sceneRef.current = state;
         const fitView = () => {
-          const sphere = visibleFlowBounds(state, flowDirection).getBoundingSphere(
+          const sphere = visibleFlowBounds(state, flowDirectionRef.current).getBoundingSphere(
             new THREE.Sphere(),
           );
           const fov = THREE.MathUtils.degToRad(camera.fov);
@@ -773,9 +1197,16 @@ export function FlowResultsViewer({
         };
         fitViewRef.current = fitView;
         fitView();
-        rebuildFlow(state, probes, snapshot, setup, selectedSurface);
-        setSurfacePressure(model, showPressure, flowDirection);
-        setSurfaceSelection(model, selectedSurface);
+        rebuildFlow(
+          state,
+          probesRef.current,
+          activeProbeIdRef.current,
+          snapshotRef.current,
+          setupRef.current,
+          selectedSurfaceRef.current,
+        );
+        setSurfacePressure(model, showPressureRef.current, flowDirectionRef.current);
+        setSurfaceSelection(model, selectedSurfaceRef.current);
         setMessage("");
       })
       .catch((error: unknown) => setMessage(toUserMessage(error)));
@@ -785,8 +1216,11 @@ export function FlowResultsViewer({
       cancelAnimationFrame(frame);
       observer.disconnect();
       renderer.domElement.removeEventListener("dblclick", selectAtPointer);
-      renderer.domElement.removeEventListener("pointerdown", rememberPointer);
+      renderer.domElement.removeEventListener("pointerdown", beginPointer);
+      renderer.domElement.removeEventListener("pointermove", dragPointer);
       renderer.domElement.removeEventListener("pointerup", selectDomainFace);
+      renderer.domElement.removeEventListener("pointerup", endPointer);
+      renderer.domElement.removeEventListener("pointercancel", endPointer);
       controls.dispose();
       viewHelper.dispose();
       disposeGroup(flowGroup);
@@ -806,13 +1240,12 @@ export function FlowResultsViewer({
         container.removeChild(renderer.domElement);
     };
     // Scene recreation is limited to assets and coordinate-system changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [geometry, onSurfaceSelect, projectId, upAxis]);
 
   useEffect(() => {
     const state = sceneRef.current;
-    if (state) rebuildFlow(state, probes, snapshot, setup, selectedSurface);
-  }, [probes, selectedSurface, setup, snapshot]);
+    if (state) rebuildFlow(state, probes, activeProbeId, snapshot, setup, selectedSurface);
+  }, [activeProbeId, probes, selectedSurface, setup, snapshot]);
 
   useEffect(() => {
     if (sceneRef.current) sceneRef.current.domainGroup.visible = showDomain;
@@ -832,26 +1265,26 @@ export function FlowResultsViewer({
   const direction = settings.reverse ? "Outlet → inlet" : "Inlet → outlets";
   const velocity = snapshot?.velocityMagnitude.mean ?? flowDirection.length();
   const pressure = snapshot?.pressure ? snapshot.pressure.mean * setup.fluid.density : undefined;
-  const densityUnit = settings.kind === "point" ? "m³" : "m²";
-  const streamlineMetric =
-    settings.kind === "point"
+  const densityUnit = settings.kind === "point" ? "m³" : settings.kind === "line" ? "m" : "m²";
+  const metricBounds = setup.boundaryBox
+    ? new THREE.Box3(
+        new THREE.Vector3(...setup.boundaryBox.min),
+        new THREE.Vector3(...setup.boundaryBox.max),
+      )
+    : null;
+  const metricFlowAxis = flowDirection
+    .toArray()
+    .map(Math.abs)
+    .indexOf(Math.max(...flowDirection.toArray().map(Math.abs)));
+  const streamlineMetric = metricBounds
+    ? probeMetric(settings, metricBounds, metricFlowAxis)
+    : settings.kind === "point"
       ? (4 / 3) * Math.PI * settings.radius ** 3
-      : setup.boundaryBox
-        ? Math.max(
-            ...[
-              (setup.boundaryBox.max[0] - setup.boundaryBox.min[0]) *
-                (setup.boundaryBox.max[1] - setup.boundaryBox.min[1]),
-              (setup.boundaryBox.max[1] - setup.boundaryBox.min[1]) *
-                (setup.boundaryBox.max[2] - setup.boundaryBox.min[2]),
-              (setup.boundaryBox.max[0] - setup.boundaryBox.min[0]) *
-                (setup.boundaryBox.max[2] - setup.boundaryBox.min[2]),
-            ],
-          )
-        : 1;
+      : 1;
   const displayedStreamlines = THREE.MathUtils.clamp(
     Math.round(settings.density * streamlineMetric),
-    4,
-    64,
+    ["domain", "connections", "surface", "slice"].includes(settings.kind) ? 12 : 5,
+    96,
   );
 
   return (
@@ -862,13 +1295,31 @@ export function FlowResultsViewer({
       >
         <aside className="flow-panel" aria-label="Airflow visualization controls">
           <header>
-            <div>
+            <div className="flow-panel__title">
               <span>{isPreview ? "Live preview" : "Result field"}</span>
               <strong>Airflow probes</strong>
             </div>
-            <span className={`flow-panel__live ${snapshot ? "is-ready" : ""}`}>
-              {snapshot ? `t = ${snapshot.time.toPrecision(4)}` : "Initial field"}
-            </span>
+            <div className="flow-panel__status">
+              <span
+                className={`flow-panel__live ${snapshot ? "is-ready" : ""}`}
+                role="status"
+                aria-live="polite"
+              >
+                {snapshot ? `t = ${snapshot.time.toPrecision(4)}` : "Initial field"}
+              </span>
+              {isPreview ? (
+                <button
+                  className="flow-panel__sync"
+                  type="button"
+                  onClick={() => void onSyncPreview()}
+                  disabled={previewSyncing}
+                  aria-label="Sync latest airflow preview"
+                  title="Read the latest complete OpenFOAM field"
+                >
+                  {previewSyncing ? "Syncing…" : "Sync latest"}
+                </button>
+              ) : null}
+            </div>
           </header>
           <div className="flow-panel__body">
             <div className="flow-probe-list" aria-label="Active airflow probes">
@@ -945,6 +1396,47 @@ export function FlowResultsViewer({
                 {direction}
               </button>
             ) : null}
+            <div className="flow-pressure-gradient">
+              <span>Pressure gradient</span>
+              <div>
+                <label>
+                  Low
+                  <input
+                    type="color"
+                    value={colorHex(settings.lowPressureColor)}
+                    aria-label="Low pressure probe color"
+                    onInput={(event) => {
+                      const lowPressureColor = Number.parseInt(
+                        event.currentTarget.value.slice(1),
+                        16,
+                      );
+                      updateActiveProbe((current) => ({ ...current, lowPressureColor }));
+                    }}
+                  />
+                </label>
+                <i
+                  aria-hidden="true"
+                  style={{
+                    background: `linear-gradient(90deg, ${colorHex(settings.lowPressureColor)}, ${colorHex(settings.highPressureColor)})`,
+                  }}
+                />
+                <label>
+                  High
+                  <input
+                    type="color"
+                    value={colorHex(settings.highPressureColor)}
+                    aria-label="High pressure probe color"
+                    onInput={(event) => {
+                      const highPressureColor = Number.parseInt(
+                        event.currentTarget.value.slice(1),
+                        16,
+                      );
+                      updateActiveProbe((current) => ({ ...current, highPressureColor }));
+                    }}
+                  />
+                </label>
+              </div>
+            </div>
             {settings.kind !== "slice" ? (
               <label className="flow-range">
                 <span>
@@ -956,12 +1448,10 @@ export function FlowResultsViewer({
                   max="8"
                   step="0.2"
                   value={settings.density}
-                  onChange={(event) =>
-                    updateActiveProbe((current) => ({
-                      ...current,
-                      density: event.target.valueAsNumber,
-                    }))
-                  }
+                  onInput={(event) => {
+                    const density = event.currentTarget.valueAsNumber;
+                    updateActiveProbe((current) => ({ ...current, density }));
+                  }}
                 />
                 <small>{settings.kind === "point" ? "lines / m³" : "lines / m²"}</small>
               </label>
@@ -1134,8 +1624,8 @@ export function FlowResultsViewer({
         </div>
       ) : null}
       <div className="geometry-viewer__hint">
-        Orbit · left drag · Pan · right drag · Zoom · wheel · Select bounding face · click · Select
-        model surface · double-click
+        Orbit · left drag · Pan · right drag · Zoom · wheel · Move probe · drag colored handle ·
+        Select bounding face · click · Select model surface · double-click
       </div>
       {children}
     </div>

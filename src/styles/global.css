@@ -877,11 +877,11 @@ p {
   border-bottom: 1px solid rgb(255 255 255 / 12%);
 }
 
-.flow-panel > header > div {
+.flow-panel__title {
   display: grid;
 }
 
-.flow-panel > header div > span {
+.flow-panel__title > span {
   color: #72cfff;
   font-size: 8px;
   font-weight: 750;
@@ -907,6 +907,32 @@ p {
   border-color: rgb(120 214 163 / 42%);
   background: rgb(120 214 163 / 8%);
   color: #78d6a3;
+}
+
+.flow-panel__status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.flow-panel__sync {
+  min-height: 22px;
+  padding: 3px 7px;
+  border: 1px solid #315d70;
+  border-radius: 3px;
+  background: rgb(114 207 255 / 8%);
+  color: #bceaff;
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.flow-panel__sync:hover:not(:disabled) {
+  background: rgb(114 207 255 / 16%);
+}
+
+.flow-panel__sync:disabled {
+  cursor: wait;
+  opacity: 0.6;
 }
 
 .flow-panel__body {
@@ -1002,6 +1028,46 @@ p {
   color: #bceaff;
   font-size: 10px;
   font-weight: 700;
+}
+
+.flow-pressure-gradient {
+  display: grid;
+  gap: 5px;
+}
+
+.flow-pressure-gradient > span {
+  color: var(--text-secondary);
+  font-size: 9px;
+}
+
+.flow-pressure-gradient > div {
+  display: grid;
+  grid-template-columns: auto minmax(40px, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.flow-pressure-gradient label {
+  display: grid;
+  color: var(--text-disabled);
+  font-size: 8px;
+  gap: 3px;
+}
+
+.flow-pressure-gradient input[type="color"] {
+  width: 34px;
+  height: 24px;
+  padding: 2px;
+  border: 1px solid var(--border-primary);
+  border-radius: 3px;
+  background: rgb(255 255 255 / 4%);
+}
+
+.flow-pressure-gradient i {
+  height: 8px;
+  margin-bottom: 8px;
+  border: 1px solid rgb(255 255 255 / 16%);
+  border-radius: 5px;
 }
 
 .flow-range {
