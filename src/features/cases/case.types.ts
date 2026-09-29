@@ -5,6 +5,7 @@ export type FlowRegime = "Steady" | "Transient";
 export type FlowDomain = "External" | "Internal";
 export type TurbulenceModel = "Laminar" | "kOmegaSST" | "SpalartAllmaras";
 export type BoundaryType = "Wall" | "Inlet" | "Outlet" | "Symmetry" | "Slip";
+export type ConvergenceTarget = "Default" | "General" | "Accurate" | "VeryAccurate";
 
 export interface BoundaryCondition {
   surface: string;
@@ -46,6 +47,7 @@ export interface CfdSetup {
     writeInterval: number;
     maxIterations: number;
     processors: number;
+    convergenceTarget: ConvergenceTarget;
   };
   boundaryBox: BoundaryBox | null;
   boundaries: BoundaryCondition[];
@@ -117,7 +119,7 @@ export interface FlowSnapshot {
   velocityMagnitude: FieldStatistics;
   pressure: FieldStatistics | null;
   sampleCount: number;
-  source: "reconstructed" | "processor0";
+  source: "reconstructed" | "processor0" | "solver-log";
 }
 
 export interface OpenFoamGeometryData {

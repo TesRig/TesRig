@@ -13,6 +13,7 @@ import type {
 } from "../case.types";
 import { createBackgroundMeshPlan, formatCellCount } from "../mesh-planning";
 import { resolveFlowDirection } from "../flow-direction";
+import { simulationEta } from "../simulation-progress";
 import { SimulationOutputChart } from "./SimulationOutputChart";
 
 interface CfdSetupPanelProps {
@@ -205,11 +206,13 @@ export function CfdSetupPanel({
     [setup.boundaryBox, setup.mesh.baseCellSize],
   );
   const taskActive = Boolean(job && ["Starting", "Running", "Cancelling"].includes(job.status));
+  const solverFinished = Boolean(taskActive && job?.progress === 100);
   const displayedWriteInterval =
     setup.flowRegime === "Steady" && setup.run.writeInterval < 1
       ? Math.max(1, Math.ceil(setup.run.maxIterations / 10))
       : setup.run.writeInterval;
   const jobId = job?.id;
+  const eta = simulationEta(job);
 
   useEffect(() => {
     if (jobId) setChartCollapsed(false);
@@ -257,7 +260,7 @@ export function CfdSetupPanel({
     onChange({ ...setup, mesh: { ...setup.mesh, [key]: value } });
   }
 
-  function changeRun(key: keyof CfdSetup["run"], value: number) {
+  function changeRun<Key extends keyof CfdSetup["run"]>(key: Key, value: CfdSetup["run"][Key]) {
     onChange({ ...setup, run: { ...setup.run, [key]: value } });
   }
 
@@ -895,27 +898,46 @@ export function CfdSetupPanel({
                       onChange={(value) => changeRun("writeInterval", value)}
                     />
                     <NumericInput
-                      label="Processors"
+                      label="Processors (MPI)"
                       value={setup.run.processors}
                       min={1}
                       step={1}
                       onChange={(value) => changeRun("processors", value)}
                     />
                   </div>
+                  <label className="cfd-field">
+                    <span>Target convergence</span>
+                    <select
+                      value={setup.run.convergenceTarget}
+                      onChange={(event) =>
+                        changeRun(
+                          "convergenceTarget",
+                          event.target.value as CfdSetup["run"]["convergenceTarget"],
+                        )
+                      }
+                    >
+                      <option value="Default">Default (iteration/time limit)</option>
+                      <option value="General">General (1e-4)</option>
+                      <option value="Accurate">Accurate (1e-5)</option>
+                      <option value="VeryAccurate">Very accurate (1e-6)</option>
+                    </select>
+                  </label>
                   <div className="openfoam-output">
                     <strong>
-                      {taskActive
-                        ? "Simulation running"
-                        : job
-                          ? `Simulation · ${job.status}`
-                          : "OpenFOAM simulation"}
+                      {solverFinished
+                        ? "Simulation complete · processing results"
+                        : taskActive
+                          ? "Simulation running"
+                          : job
+                            ? `Simulation · ${job.status}`
+                            : "OpenFOAM simulation"}
                     </strong>
                     <span>
                       {job?.error?.split(/\r?\n/, 1)[0] ??
                         (runtime && !runtime.runtimeReady
                           ? runtime.message
                           : taskActive
-                            ? `${job?.stage ?? "Preparing"} · ${Math.round(job?.progress ?? 0)}%`
+                            ? `${job?.stage ?? "Preparing"} · ${Math.round(job?.progress ?? 0)}%${eta ? ` · ETA ${eta}` : ""}`
                             : (runtime?.message ?? "Ready to run"))}
                     </span>
                     {taskActive && (

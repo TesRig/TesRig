@@ -126,6 +126,7 @@ fn open_or_create_dev_project(service: &mut ProjectService) -> crate::error::App
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let resource_directory = app.path().resource_dir()?;
             let data_directory = app.path().app_local_data_dir()?;
@@ -157,6 +158,7 @@ pub fn run() {
             commands::solver::get_simulation_status,
             commands::solver::get_simulation_log,
             commands::solver::get_flow_snapshot,
+            commands::solver::get_case_flow_snapshot,
             commands::solver::clear_simulation_log,
             commands::solver::cancel_simulation,
             commands::processing::list_processing_scripts,

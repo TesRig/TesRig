@@ -10,6 +10,7 @@ use crate::solver::openfoam::{CaseValidation, OpenFoamAdapter};
 use crate::solver::processing::{
     self, ProcessingResult, ProcessingResultSummary, ProcessingScript, ProcessingScriptRun,
 };
+use crate::solver::simulation::{read_latest_flow_snapshot, FlowSnapshot};
 use chrono::Utc;
 use serde_json::Value;
 use std::fs;
@@ -304,6 +305,20 @@ impl ProjectService {
         OpenFoamAdapter::clear_results(&case_root)?;
         persist_workspace(workspace)?;
         Ok(case_root)
+    }
+
+    pub fn case_flow_snapshot(
+        &self,
+        project_id: Uuid,
+        case_id: Uuid,
+    ) -> AppResult<Option<FlowSnapshot>> {
+        let workspace = self.workspaces.current()?;
+        ensure_project(workspace, project_id)?;
+        ensure_case(workspace, case_id)?;
+        Ok(
+            read_latest_flow_snapshot(&openfoam_case_root(workspace.root(), case_id))
+                .filter(|snapshot| snapshot.time > 0.0),
+        )
     }
 
     pub fn list_processing_scripts(

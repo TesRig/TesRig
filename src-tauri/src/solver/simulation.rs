@@ -1,5 +1,6 @@
 use crate::error::{AppError, AppResult};
 use crate::services::project_service::ProjectService;
+use crate::solver::openfoam::OpenFoamAdapter;
 use crate::solver::runtime::RuntimeManager;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -159,31 +160,72 @@ impl SimulationManager {
         let runtime = self.runtime.clone();
         thread::spawn(move || {
             let wait_result = child.wait();
-            let shutdown_result = runtime.shutdown_after_task();
-
             let cancelling = state
                 .lock()
                 .ok()
                 .and_then(|state| state.current.as_ref().map(|job| job.status))
                 == Some(SimulationJobStatus::Cancelling);
 
-            let archive_result = project_service
-                .lock()
-                .map_err(|_| {
-                    AppError::InternalError("project service lock was poisoned".to_owned())
-                })
-                .and_then(|mut service| service.save_project(project_id).map(|_| ()));
+            // Cancellation already shuts down the process tree (or the WSL runtime). Running the
+            // normal shutdown again can delay the terminal status and race with a subsequent run.
+            let shutdown_result = if cancelling {
+                Ok(())
+            } else {
+                runtime.shutdown_after_task()
+            };
+
+            // Publish cancellation as soon as the solver process has stopped. Archiving can take
+            // noticeably longer for a generated case and must not keep the UI stuck on Stopping.
+            if cancelling {
+                if let Ok(mut state) = state.lock() {
+                    state.process_id = None;
+                    if let Some(current) = state.current.as_mut().filter(|item| item.id == job.id) {
+                        current.finished_at = Some(Utc::now());
+                        current.status = SimulationJobStatus::Cancelled;
+                        current.stage = "Cancelled".to_owned();
+                        match wait_result.as_ref() {
+                            Ok(status) => current.exit_code = status.code(),
+                            Err(error) => current.error = Some(error.to_string()),
+                        }
+                    }
+                }
+            }
+
+            let solver_succeeded = wait_result.as_ref().is_ok_and(|status| status.success())
+                && shutdown_result.is_ok();
+            if !cancelling && solver_succeeded {
+                if let Ok(mut state) = state.lock() {
+                    state.process_id = None;
+                    if let Some(current) = state.current.as_mut().filter(|item| item.id == job.id) {
+                        current.stage = "Saving results".to_owned();
+                        current.progress = 100.0;
+                    }
+                }
+            }
+
+            let archive_result = if solver_succeeded {
+                OpenFoamAdapter::compact_results(&case_directory)
+            } else {
+                Ok(())
+            }
+            .and_then(|_| {
+                project_service
+                    .lock()
+                    .map_err(|_| {
+                        AppError::InternalError("project service lock was poisoned".to_owned())
+                    })
+                    .and_then(|mut service| service.save_project(project_id).map(|_| ()))
+            });
+
+            if cancelling {
+                return;
+            }
 
             if let Ok(mut state) = state.lock() {
                 state.process_id = None;
                 if let Some(current) = state.current.as_mut().filter(|item| item.id == job.id) {
                     current.finished_at = Some(Utc::now());
                     match wait_result {
-                        Ok(status) if cancelling => {
-                            current.status = SimulationJobStatus::Cancelled;
-                            current.exit_code = status.code();
-                            current.stage = "Cancelled".to_owned();
-                        }
                         Ok(status) => {
                             current.exit_code = status.code();
                             if status.success() && shutdown_result.is_ok() && archive_result.is_ok()
@@ -222,16 +264,8 @@ impl SimulationManager {
                             }
                         }
                         Err(error) => {
-                            current.status = if cancelling {
-                                SimulationJobStatus::Cancelled
-                            } else {
-                                SimulationJobStatus::Failed
-                            };
-                            current.stage = if cancelling {
-                                "Cancelled".to_owned()
-                            } else {
-                                "Failed".to_owned()
-                            };
+                            current.status = SimulationJobStatus::Failed;
+                            current.stage = "Failed".to_owned();
                             current.error = Some(error.to_string());
                         }
                     }
@@ -447,7 +481,7 @@ fn parse_simulation_time(line: &str) -> Option<f64> {
 
 const MAX_FIELD_SAMPLES: usize = 4096;
 
-fn read_latest_flow_snapshot(case_directory: &Path) -> Option<FlowSnapshot> {
+pub(crate) fn read_latest_flow_snapshot(case_directory: &Path) -> Option<FlowSnapshot> {
     let mut candidates = vec![(1_u8, case_directory.to_path_buf())];
     let processor_zero = case_directory.join("processor0");
     if processor_zero.is_dir() {
@@ -777,7 +811,7 @@ fn diagnostic_suggestion<'a>(stage: &str, context: &'a str) -> &'a str {
         || context.contains("error in iostream")
         || (context.contains("fatal io error") && context.contains("writelist"))
     {
-        "OpenFOAM could not finish writing a result field. Free space on the Windows system drive and its temporary directory, then run the case again. TesRig will regenerate the case and retain only the 10 newest result times to prevent unbounded output growth."
+        "OpenFOAM could not finish writing a result field. Free space on the Windows system drive and its temporary directory, then run the case again. TesRig will regenerate the case and retain only the newest result time to prevent unbounded output growth."
     } else if context.contains("locationinmesh") {
         "Resize the boundary box so it fully surrounds the geometry and leaves open fluid space near a far corner."
     } else if context.contains("cannot find patchfield entry")
@@ -860,7 +894,7 @@ mod tests {
         let suggestion = diagnostic_suggestion("simpleFoam", context);
 
         assert!(suggestion.contains("Free space"));
-        assert!(suggestion.contains("10 newest result times"));
+        assert!(suggestion.contains("newest result time"));
     }
 
     #[test]

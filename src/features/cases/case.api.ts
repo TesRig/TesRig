@@ -88,6 +88,13 @@ export function getFlowSnapshot() {
   return invokeCommand<FlowSnapshot | null>("get_flow_snapshot");
 }
 
+export function getCaseFlowSnapshot(projectId: string, caseId: string) {
+  return invokeCommand<FlowSnapshot | null, { projectId: string; caseId: string }>(
+    "get_case_flow_snapshot",
+    { projectId, caseId },
+  );
+}
+
 export function clearSimulationLog() {
   return invokeCommand<SimulationLog>("clear_simulation_log");
 }

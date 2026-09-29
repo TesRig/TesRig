@@ -6,6 +6,13 @@ import { toUserMessage } from "../../../lib/errors/app-error";
 import { getGeometryData } from "../../geometry/geometry.api";
 import { createGeometryModel } from "../../geometry/geometry-model";
 import { disposeInletArrowField, updateInletArrowField } from "../../geometry/inlet-arrow-field";
+import {
+  createViewerCamera,
+  fitViewerCamera,
+  resizeViewerCamera,
+  type CameraProjection,
+  type ViewerCamera,
+} from "../../geometry/viewer-camera";
 import type { GeometryAsset, UpAxis } from "../../projects/project.types";
 import type { CfdSetup, FlowSnapshot } from "../case.types";
 import { listFlowVisualizationExtensions } from "../flow-extension-api";
@@ -13,12 +20,14 @@ import { resolveFlowDirection } from "../flow-direction";
 
 type ProbeKind = "domain" | "line" | "point" | "connections" | "surface" | "slice";
 type SliceField = "pressure" | "velocity";
+type PressureGradientId = "coolWarm" | "turbo" | "viridis" | "custom";
 
 interface ProbeSettings {
   id: string;
   color: number;
   lowPressureColor: number;
   highPressureColor: number;
+  pressureGradient: PressureGradientId;
   visible: boolean;
   kind: ProbeKind;
   density: number;
@@ -67,13 +76,29 @@ interface SceneState {
   inletArrowGroup: THREE.Group;
   sliceGroup: THREE.Group;
   renderer: THREE.WebGLRenderer;
-  camera: THREE.PerspectiveCamera;
+  camera: ViewerCamera;
   controls: OrbitControls;
   viewHelper: ViewHelper;
   particleSets: ParticleSet[];
 }
 
 const PROBE_COLORS = [0x64d8ff, 0xffb45c, 0x8be39b, 0xc69cff, 0xff7196, 0xf4df4e];
+const MIN_STREAMLINE_DENSITY = 0.2;
+const MAX_STREAMLINE_DENSITY = 8;
+const MAX_STREAMLINE_COUNT = 96;
+const PRESSURE_GRADIENTS: ReadonlyArray<{
+  id: Exclude<PressureGradientId, "custom">;
+  label: string;
+  colors: readonly number[];
+}> = [
+  {
+    id: "coolWarm",
+    label: "Pressure: blue → red",
+    colors: [0x2455ff, 0x4fdcff, 0xffec85, 0xff3b30],
+  },
+  { id: "turbo", label: "Turbo", colors: [0x30123b, 0x2ab9ee, 0xa4fc3c, 0xfb8022, 0x7a0403] },
+  { id: "viridis", label: "Viridis", colors: [0x440154, 0x31688e, 0x35b779, 0xfde725] },
+];
 const DOMAIN_FACES = [
   { id: "domain:xMin", axis: 0, side: "min" },
   { id: "domain:xMax", axis: 0, side: "max" },
@@ -85,13 +110,15 @@ const DOMAIN_FACES = [
 
 function createProbe(index: number, kind: ProbeKind = index === 0 ? "connections" : "line") {
   const color = PROBE_COLORS[index % PROBE_COLORS.length];
-  const lowPressureColor = new THREE.Color(color).lerp(new THREE.Color(0xffffff), 0.68).getHex();
-  const highPressureColor = new THREE.Color(color).multiplyScalar(0.32).getHex();
+  const defaultGradient = PRESSURE_GRADIENTS[0].colors;
+  const lowPressureColor = defaultGradient[0];
+  const highPressureColor = defaultGradient[defaultGradient.length - 1];
   return {
     id: `probe-${Date.now()}-${index}`,
     color,
     lowPressureColor,
     highPressureColor,
+    pressureGradient: "coolWarm",
     visible: true,
     kind,
     density: 1.2,
@@ -165,6 +192,32 @@ function heatColor(value: number) {
 
 function colorHex(color: number) {
   return `#${color.toString(16).padStart(6, "0")}`;
+}
+
+function pressureGradientColors(settings: ProbeSettings) {
+  if (settings.pressureGradient === "custom") {
+    return [settings.lowPressureColor, settings.highPressureColor] as readonly number[];
+  }
+  return (
+    PRESSURE_GRADIENTS.find(({ id }) => id === settings.pressureGradient)?.colors ??
+    PRESSURE_GRADIENTS[0].colors
+  );
+}
+
+function pressureGradientCss(settings: ProbeSettings) {
+  const colors = pressureGradientColors(settings).map(colorHex);
+  return `linear-gradient(90deg, ${colors.join(", ")})`;
+}
+
+function setGradientColor(
+  target: THREE.Color,
+  end: THREE.Color,
+  colors: readonly number[],
+  value: number,
+) {
+  const position = THREE.MathUtils.clamp(value, 0, 1) * (colors.length - 1);
+  const index = Math.min(Math.floor(position), colors.length - 2);
+  return target.setHex(colors[index]).lerp(end.setHex(colors[index + 1]), position - index);
 }
 
 function setSurfacePressure(model: THREE.Object3D, enabled: boolean, direction: THREE.Vector3) {
@@ -284,17 +337,14 @@ function setDomainSelection(group: THREE.Group, surface: string | null) {
   });
 }
 
-function probeMetric(settings: ProbeSettings, bounds: THREE.Box3, flowAxis: number) {
-  const size = bounds.getSize(new THREE.Vector3());
-  const crossAxes = [0, 1, 2].filter((axis) => axis !== flowAxis);
-  if (settings.kind === "point") return (4 / 3) * Math.PI * settings.radius ** 3;
-  if (settings.kind === "line") {
-    const { start, end } = defaultLinePoints(settings, bounds, flowAxis, 1);
-    return Math.max(start.distanceTo(end), 1e-6);
-  }
-  if (settings.kind === "surface")
-    return Math.max(size.getComponent(crossAxes[0]) * size.getComponent(crossAxes[1]), 1e-6);
-  return Math.max(size.getComponent(crossAxes[0]) * size.getComponent(crossAxes[1]), 1e-6);
+function streamlineCount(settings: ProbeSettings) {
+  const minimum = ["domain", "connections", "surface", "slice"].includes(settings.kind) ? 12 : 5;
+  const densityProgress = THREE.MathUtils.clamp(
+    (settings.density - MIN_STREAMLINE_DENSITY) / (MAX_STREAMLINE_DENSITY - MIN_STREAMLINE_DENSITY),
+    0,
+    1,
+  );
+  return Math.round(THREE.MathUtils.lerp(minimum, MAX_STREAMLINE_COUNT, densityProgress));
 }
 
 function defaultLinePoints(
@@ -327,9 +377,7 @@ function seedPoints(
   const components = direction.toArray().map(Math.abs);
   const flowAxis = components.indexOf(Math.max(...components));
   const crossAxes = [0, 1, 2].filter((axis) => axis !== flowAxis);
-  const metric = probeMetric(settings, bounds, flowAxis);
-  const minimum = ["domain", "connections", "surface", "slice"].includes(settings.kind) ? 12 : 5;
-  const count = THREE.MathUtils.clamp(Math.round(settings.density * metric), minimum, 96);
+  const count = streamlineCount(settings);
   const seeds: THREE.Vector3[] = [];
   const flowSign = direction.getComponent(flowAxis) >= 0 ? 1 : -1;
   const upstream =
@@ -397,7 +445,7 @@ function seedPoints(
     }
     seeds.push(point);
   }
-  return { seeds, flowAxis, crossAxes, metric, flowSign, line, probeCenter };
+  return { seeds, flowAxis, crossAxes, flowSign, line, probeCenter };
 }
 
 function visibleFlowBounds(state: SceneState, direction: THREE.Vector3) {
@@ -641,9 +689,9 @@ function rebuildFlow(
       }
 
       const curves: THREE.CatmullRomCurve3[] = [];
-      const lowPressureColor = new THREE.Color(settings.lowPressureColor);
-      const highPressureColor = new THREE.Color(settings.highPressureColor);
+      const pressureGradient = pressureGradientColors(settings);
       const pressureColor = new THREE.Color();
+      const pressureColorEnd = new THREE.Color();
       seeds.forEach((seed, index) => {
         const startCoordinate = ["domain", "connections"].includes(settings.kind)
           ? inletCoordinate
@@ -729,7 +777,7 @@ function rebuildFlow(
             0,
             1,
           );
-          pressureColor.copy(lowPressureColor).lerp(highPressureColor, pressure);
+          setGradientColor(pressureColor, pressureColorEnd, pressureGradient, pressure);
           colors[pointIndex * 3] = pressureColor.r;
           colors[pointIndex * 3 + 1] = pressureColor.g;
           colors[pointIndex * 3 + 2] = pressureColor.b;
@@ -798,9 +846,12 @@ export function FlowResultsViewer({
   children,
 }: FlowResultsViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const geometryRef = useRef(geometry);
+  geometryRef.current = geometry;
   const sceneRef = useRef<SceneState | null>(null);
   const fitViewRef = useRef<() => void>(() => undefined);
   const [message, setMessage] = useState("Loading airflow view…");
+  const [cameraProjection, setCameraProjection] = useState<CameraProjection>("perspective");
   const [showDomain, setShowDomain] = useState(false);
   const [showPressure, setShowPressure] = useState(false);
   const [probes, setProbes] = useState<ProbeSettings[]>(() => [createProbe(0)]);
@@ -812,6 +863,7 @@ export function FlowResultsViewer({
   const activeProbeIdRef = useRef(activeProbeId);
   const selectedSurfaceRef = useRef(selectedSurface);
   const showPressureRef = useRef(showPressure);
+  const showDomainRef = useRef(showDomain);
   const snapshotRef = useRef(snapshot);
   const flowDirectionRef = useRef(new THREE.Vector3(1, 0, 0));
   const settings = probes.find(({ id }) => id === activeProbeId) ?? probes[0];
@@ -821,6 +873,7 @@ export function FlowResultsViewer({
   activeProbeIdRef.current = activeProbeId;
   selectedSurfaceRef.current = selectedSurface;
   showPressureRef.current = showPressure;
+  showDomainRef.current = showDomain;
   snapshotRef.current = snapshot;
   flowDirectionRef.current = flowDirection;
 
@@ -851,11 +904,11 @@ export function FlowResultsViewer({
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
+    const currentGeometry = geometryRef.current;
     let disposed = false;
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x091014);
-    const camera = new THREE.PerspectiveCamera(42, 1, 0.01, 100000);
-    camera.up.set(0, upAxis === "Y" ? 1 : 0, upAxis === "Z" ? 1 : 0);
+    const camera = createViewerCamera(cameraProjection, 42, upAxis);
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -909,8 +962,7 @@ export function FlowResultsViewer({
       const width = Math.max(container.clientWidth, 1);
       const height = Math.max(container.clientHeight, 1);
       renderer.setSize(width, height, false);
-      camera.aspect = width / height;
-      camera.updateProjectionMatrix();
+      resizeViewerCamera(camera, width, height);
     };
     const observer = new ResizeObserver(resize);
     observer.observe(container);
@@ -1121,8 +1173,8 @@ export function FlowResultsViewer({
     renderer.domElement.addEventListener("pointerup", endPointer);
     renderer.domElement.addEventListener("pointercancel", endPointer);
 
-    void getGeometryData(projectId, geometry.id)
-      .then(({ bytes }) => createGeometryModel(geometry, Uint8Array.from(bytes)))
+    void getGeometryData(projectId, currentGeometry.id)
+      .then(({ bytes }) => createGeometryModel(currentGeometry, Uint8Array.from(bytes)))
       .then((model) => {
         if (disposed) return;
         const rawBounds = new THREE.Box3().setFromObject(model);
@@ -1172,16 +1224,11 @@ export function FlowResultsViewer({
           const sphere = visibleFlowBounds(state, flowDirectionRef.current).getBoundingSphere(
             new THREE.Sphere(),
           );
-          const fov = THREE.MathUtils.degToRad(camera.fov);
-          const distance = (sphere.radius / Math.sin(fov / 2)) * 1.05;
           const view =
             upAxis === "Y" ? new THREE.Vector3(1, 0.7, 1) : new THREE.Vector3(1, -1, 0.7);
           controls.target.copy(sphere.center);
           viewHelper.center.copy(sphere.center);
-          camera.position.copy(sphere.center).addScaledVector(view.normalize(), distance);
-          camera.near = Math.max(sphere.radius / 1000, 0.001);
-          camera.far = Math.max(distance + sphere.radius * 20, 100);
-          camera.updateProjectionMatrix();
+          fitViewerCamera(camera, sphere, view, 1.05);
           controls.update();
         };
         fitViewRef.current = fitView;
@@ -1207,6 +1254,7 @@ export function FlowResultsViewer({
           surface: selectedSurfaceRef.current,
           velocity: selectedInlet?.velocity,
         });
+        inletArrowGroup.visible = showDomainRef.current && inletArrowGroup.children.length > 0;
         setMessage("");
       })
       .catch((error: unknown) => setMessage(toUserMessage(error)));
@@ -1241,7 +1289,7 @@ export function FlowResultsViewer({
         container.removeChild(renderer.domElement);
     };
     // Scene recreation is limited to assets and coordinate-system changes.
-  }, [geometry, onSurfaceSelect, projectId, upAxis]);
+  }, [cameraProjection, geometry.format, geometry.id, onSurfaceSelect, projectId, upAxis]);
 
   useEffect(() => {
     const state = sceneRef.current;
@@ -1257,11 +1305,15 @@ export function FlowResultsViewer({
         surface: selectedSurface,
         velocity: selectedInlet?.velocity,
       });
+      state.inletArrowGroup.visible = showDomain && state.inletArrowGroup.children.length > 0;
     }
-  }, [activeProbeId, probes, selectedSurface, setup, snapshot]);
+  }, [activeProbeId, probes, selectedSurface, setup, showDomain, snapshot]);
 
   useEffect(() => {
-    if (sceneRef.current) sceneRef.current.domainGroup.visible = showDomain;
+    const state = sceneRef.current;
+    if (!state) return;
+    state.domainGroup.visible = showDomain;
+    state.inletArrowGroup.visible = showDomain && state.inletArrowGroup.children.length > 0;
   }, [showDomain]);
 
   useEffect(() => {
@@ -1279,27 +1331,7 @@ export function FlowResultsViewer({
   const velocity = snapshot?.velocityMagnitude.mean ?? flowDirection.length();
   const pressure = snapshot?.pressure ? snapshot.pressure.mean * setup.fluid.density : undefined;
   const densityUnit = settings.kind === "point" ? "m³" : settings.kind === "line" ? "m" : "m²";
-  const metricBounds =
-    setup.flowDomain !== "Internal" && setup.boundaryBox
-      ? new THREE.Box3(
-          new THREE.Vector3(...setup.boundaryBox.min),
-          new THREE.Vector3(...setup.boundaryBox.max),
-        )
-      : null;
-  const metricFlowAxis = flowDirection
-    .toArray()
-    .map(Math.abs)
-    .indexOf(Math.max(...flowDirection.toArray().map(Math.abs)));
-  const streamlineMetric = metricBounds
-    ? probeMetric(settings, metricBounds, metricFlowAxis)
-    : settings.kind === "point"
-      ? (4 / 3) * Math.PI * settings.radius ** 3
-      : 1;
-  const displayedStreamlines = THREE.MathUtils.clamp(
-    Math.round(settings.density * streamlineMetric),
-    ["domain", "connections", "surface", "slice"].includes(settings.kind) ? 12 : 5,
-    96,
-  );
+  const displayedStreamlines = streamlineCount(settings);
 
   return (
     <div className="geometry-viewer flow-results-viewer" ref={containerRef}>
@@ -1412,6 +1444,28 @@ export function FlowResultsViewer({
             ) : null}
             <div className="flow-pressure-gradient">
               <span>Pressure gradient</span>
+              <select
+                aria-label="Pressure gradient preset"
+                value={settings.pressureGradient}
+                onChange={(event) => {
+                  const pressureGradient = event.target.value as PressureGradientId;
+                  const preset = PRESSURE_GRADIENTS.find(({ id }) => id === pressureGradient);
+                  updateActiveProbe((current) => ({
+                    ...current,
+                    pressureGradient,
+                    lowPressureColor: preset?.colors[0] ?? current.lowPressureColor,
+                    highPressureColor:
+                      preset?.colors[preset.colors.length - 1] ?? current.highPressureColor,
+                  }));
+                }}
+              >
+                {PRESSURE_GRADIENTS.map(({ id, label }) => (
+                  <option key={id} value={id}>
+                    {label}
+                  </option>
+                ))}
+                <option value="custom">Custom endpoints</option>
+              </select>
               <div>
                 <label>
                   Low
@@ -1424,14 +1478,18 @@ export function FlowResultsViewer({
                         event.currentTarget.value.slice(1),
                         16,
                       );
-                      updateActiveProbe((current) => ({ ...current, lowPressureColor }));
+                      updateActiveProbe((current) => ({
+                        ...current,
+                        lowPressureColor,
+                        pressureGradient: "custom",
+                      }));
                     }}
                   />
                 </label>
                 <i
                   aria-hidden="true"
                   style={{
-                    background: `linear-gradient(90deg, ${colorHex(settings.lowPressureColor)}, ${colorHex(settings.highPressureColor)})`,
+                    background: pressureGradientCss(settings),
                   }}
                 />
                 <label>
@@ -1445,7 +1503,11 @@ export function FlowResultsViewer({
                         event.currentTarget.value.slice(1),
                         16,
                       );
-                      updateActiveProbe((current) => ({ ...current, highPressureColor }));
+                      updateActiveProbe((current) => ({
+                        ...current,
+                        highPressureColor,
+                        pressureGradient: "custom",
+                      }));
                     }}
                   />
                 </label>
@@ -1458,11 +1520,11 @@ export function FlowResultsViewer({
                 </span>
                 <input
                   type="range"
-                  min="0.2"
-                  max="8"
+                  min={MIN_STREAMLINE_DENSITY}
+                  max={MAX_STREAMLINE_DENSITY}
                   step="0.2"
                   value={settings.density}
-                  onInput={(event) => {
+                  onChange={(event) => {
                     const density = event.currentTarget.valueAsNumber;
                     updateActiveProbe((current) => ({ ...current, density }));
                   }}
@@ -1592,6 +1654,19 @@ export function FlowResultsViewer({
         {leftPanel}
       </div>
       <div className="geometry-viewer__toolbar flow-viewer__toolbar">
+        <div className="camera-projection-control" aria-label="Camera projection">
+          {(["perspective", "orthographic"] as CameraProjection[]).map((projection) => (
+            <button
+              key={projection}
+              className={cameraProjection === projection ? "is-active" : ""}
+              type="button"
+              aria-pressed={cameraProjection === projection}
+              onClick={() => setCameraProjection(projection)}
+            >
+              {projection === "perspective" ? "Perspective" : "Orthographic"}
+            </button>
+          ))}
+        </div>
         <button
           type="button"
           className={`geometry-viewer__fit ${showDomain ? "is-active" : ""}`}

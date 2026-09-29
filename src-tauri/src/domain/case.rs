@@ -52,6 +52,15 @@ pub enum BoundaryType {
     Slip,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ConvergenceTarget {
+    #[default]
+    Default,
+    General,
+    Accurate,
+    VeryAccurate,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FluidProperties {
@@ -118,6 +127,8 @@ pub struct RunControl {
     pub write_interval: f64,
     pub max_iterations: u32,
     pub processors: u16,
+    #[serde(default)]
+    pub convergence_target: ConvergenceTarget,
 }
 
 impl Default for RunControl {
@@ -127,7 +138,10 @@ impl Default for RunControl {
             time_step: 0.001,
             write_interval: 0.1,
             max_iterations: 1000,
-            processors: 1,
+            processors: std::thread::available_parallelism()
+                .map(|count| count.get().min(u16::MAX as usize) as u16)
+                .unwrap_or(1),
+            convergence_target: ConvergenceTarget::Default,
         }
     }
 }

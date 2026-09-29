@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "../../../components/common/Button";
 import { toUserMessage } from "../../../lib/errors/app-error";
 import { useWorkspace } from "../../../stores/workspace.store";
@@ -38,11 +38,13 @@ interface CaseWorkspaceProps {
   onStatus: (message: string, isError?: boolean) => void;
   onUpAxisChange: (upAxis: UpAxis) => void;
   onSimulationChange: (job: SimulationJob | null) => void;
+  onIoBusyChange: (busy: boolean) => void;
   simulationLog: SimulationLog | null;
   addProbeRequest: number;
   onProbeCountChange: (count: number) => void;
   processingScriptsOpen: boolean;
   showOpenFoamGeometry: boolean;
+  resultsRequest: { id: number; snapshot: FlowSnapshot } | null;
 }
 
 export function CaseWorkspace({
@@ -51,11 +53,13 @@ export function CaseWorkspace({
   onStatus,
   onUpAxisChange,
   onSimulationChange,
+  onIoBusyChange,
   simulationLog,
   addProbeRequest,
   onProbeCountChange,
   processingScriptsOpen,
   showOpenFoamGeometry,
+  resultsRequest,
 }: CaseWorkspaceProps) {
   const { project, syncProject } = useWorkspace();
   const [busy, setBusy] = useState(false);
@@ -67,6 +71,8 @@ export function CaseWorkspace({
   const [flowSnapshot, setFlowSnapshot] = useState<FlowSnapshot | null>(null);
   const [flowSnapshotSyncing, setFlowSnapshotSyncing] = useState(false);
   const [showFlowView, setShowFlowView] = useState(false);
+  const resultsRequestRef = useRef(resultsRequest);
+  resultsRequestRef.current = resultsRequest;
   const geometry = project?.geometries.find(({ id }) => id === simulationCase.geometryId);
   const sourceCase = project?.cases.find(({ id }) => id === simulationCase.variantOfCaseId);
   const jobId = job?.id;
@@ -89,7 +95,14 @@ export function CaseWorkspace({
     setFlowSnapshot(null);
     setShowFlowView(false);
   }, [simulationCase.id]);
+  useEffect(() => {
+    if (!resultsRequest) return;
+    setFlowSnapshot(resultsRequest.snapshot);
+    setShowFlowView(true);
+  }, [resultsRequest]);
   useEffect(() => onSimulationChange(job), [job, onSimulationChange]);
+  useEffect(() => onIoBusyChange(busy), [busy, onIoBusyChange]);
+  useEffect(() => () => onIoBusyChange(false), [onIoBusyChange]);
   useEffect(() => {
     let disposed = false;
     async function initializeRunState() {
@@ -102,8 +115,13 @@ export function CaseWorkspace({
         setRuntime(nextRuntime);
         const caseJob = currentJob?.caseId === simulationCase.id ? currentJob : null;
         setJob(caseJob);
+        const requestedResults = resultsRequestRef.current;
+        if (requestedResults) setFlowSnapshot(requestedResults.snapshot);
         setShowFlowView(
-          Boolean(caseJob && ["Starting", "Running", "Completed"].includes(caseJob.status)),
+          Boolean(
+            requestedResults ||
+              (caseJob && ["Starting", "Running", "Completed"].includes(caseJob.status)),
+          ),
         );
 
         const autoRun = import.meta.env.DEV && import.meta.env.VITE_TESRIG_DEV_AUTORUN === "1";
@@ -156,7 +174,7 @@ export function CaseWorkspace({
           }
         })
         .catch((error) => onStatus(toUserMessage(error), true));
-    }, 1000);
+    }, 500);
     return () => window.clearInterval(interval);
   }, [jobId, jobStatus, onStatus]);
   useEffect(() => {

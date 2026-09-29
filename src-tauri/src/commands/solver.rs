@@ -65,6 +65,22 @@ pub async fn get_flow_snapshot(state: State<'_, AppState>) -> AppResult<Option<F
 }
 
 #[tauri::command]
+pub async fn get_case_flow_snapshot(
+    request: SimulationRequest,
+    state: State<'_, AppState>,
+) -> AppResult<Option<FlowSnapshot>> {
+    let project_service = Arc::clone(&state.project_service);
+    tauri::async_runtime::spawn_blocking(move || {
+        project_service
+            .lock()
+            .map_err(|_| AppError::InternalError("project service lock was poisoned".to_owned()))?
+            .case_flow_snapshot(request.project_id, request.case_id)
+    })
+    .await
+    .map_err(|error| AppError::InternalError(format!("result lookup worker failed: {error}")))?
+}
+
+#[tauri::command]
 pub fn clear_simulation_log(state: State<'_, AppState>) -> AppResult<SimulationLog> {
     state.simulation_manager.clear_logs()
 }

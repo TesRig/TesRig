@@ -1,8 +1,17 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type UIEvent } from "react";
 import { NewCaseDialog } from "../../features/cases/components/NewCaseDialog";
 import { CaseWorkspace } from "../../features/cases/components/CaseWorkspace";
-import { clearSimulationLog, getSimulationLog } from "../../features/cases/case.api";
-import type { SimulationJob, SimulationLog } from "../../features/cases/case.types";
+import {
+  clearSimulationLog,
+  getCaseFlowSnapshot,
+  getSimulationLog,
+} from "../../features/cases/case.api";
+import type {
+  FlowSnapshot,
+  SimulationCase,
+  SimulationJob,
+  SimulationLog,
+} from "../../features/cases/case.types";
 import {
   chooseGeometryFile,
   importGeometry,
@@ -17,6 +26,10 @@ import {
 import type { UpAxis } from "../../features/projects/project.types";
 import { toUserMessage } from "../../lib/errors/app-error";
 import { setAppWindowTitle } from "../../lib/tauri/window";
+import {
+  ensureNotificationPermission,
+  notifyIfAppIsBackground,
+} from "../../lib/tauri/notifications";
 import { useWorkspace } from "../../stores/workspace.store";
 import { Button } from "../common/Button";
 import { StatusBar } from "../common/StatusBar";
@@ -32,6 +45,7 @@ export function WorkspaceShell() {
   const [selectedTreeId, setSelectedTreeId] = useState("geometry");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [caseIoBusy, setCaseIoBusy] = useState(false);
   const [status, setStatus] = useState("Project ready");
   const [statusError, setStatusError] = useState(false);
   const [errorDialog, setErrorDialog] = useState<string | null>(null);
@@ -44,8 +58,16 @@ export function WorkspaceShell() {
   const [flowProbeCount, setFlowProbeCount] = useState(1);
   const [showProcessingScripts, setShowProcessingScripts] = useState(false);
   const [openFoamGeometryCaseId, setOpenFoamGeometryCaseId] = useState<string | null>(null);
+  const [resultsRequest, setResultsRequest] = useState<{
+    caseId: string;
+    id: number;
+    snapshot: FlowSnapshot;
+  } | null>(null);
+  const [noResultsCaseName, setNoResultsCaseName] = useState<string | null>(null);
   const stdoutLogRef = useRef<HTMLPreElement>(null);
   const stderrLogRef = useRef<HTMLPreElement>(null);
+  const activeNotificationJobsRef = useRef(new Set<string>());
+  const solverCompleteNotificationJobsRef = useRef(new Set<string>());
 
   const reportSimulation = useCallback((job: SimulationJob | null) => {
     setSimulationJob(job);
@@ -60,6 +82,49 @@ export function WorkspaceShell() {
 
   const simulationJobId = simulationJob?.id;
   const simulationJobStatus = simulationJob?.status;
+  useEffect(() => {
+    if (!simulationJob) return;
+    const active = ["Starting", "Running", "Cancelling"].includes(simulationJob.status);
+    const solverFinished =
+      simulationJob.status === "Running" &&
+      simulationJob.progress === 100 &&
+      simulationJob.stage === "Saving results";
+    if (
+      solverFinished &&
+      activeNotificationJobsRef.current.has(simulationJob.id) &&
+      !solverCompleteNotificationJobsRef.current.has(simulationJob.id)
+    ) {
+      solverCompleteNotificationJobsRef.current.add(simulationJob.id);
+      void notifyIfAppIsBackground(
+        "OpenFOAM analysis complete",
+        `${activeCase?.name ?? "The simulation"} finished; TesRig is saving the results.`,
+      );
+      return;
+    }
+    if (active) {
+      activeNotificationJobsRef.current.add(simulationJob.id);
+      void ensureNotificationPermission();
+      return;
+    }
+    if (!activeNotificationJobsRef.current.delete(simulationJob.id)) return;
+    if (simulationJob.status === "Completed") {
+      if (!solverCompleteNotificationJobsRef.current.delete(simulationJob.id)) {
+        void notifyIfAppIsBackground(
+          "OpenFOAM simulation complete",
+          `${activeCase?.name ?? "The simulation"} completed successfully.`,
+        );
+      }
+    } else if (simulationJob.status === "Failed") {
+      solverCompleteNotificationJobsRef.current.delete(simulationJob.id);
+      void notifyIfAppIsBackground(
+        "OpenFOAM simulation failed",
+        simulationJob.error?.split(/\r?\n/, 1)[0] ?? "Open TesRig to review the solver error.",
+      );
+    } else {
+      solverCompleteNotificationJobsRef.current.delete(simulationJob.id);
+    }
+  }, [activeCase?.name, simulationJob]);
+
   useEffect(() => {
     if (!simulationJobId || !simulationJobStatus) return;
     let disposed = false;
@@ -158,6 +223,32 @@ export function WorkspaceShell() {
   function openCase(caseId: string) {
     setSelectedTreeId(`case:${caseId}`);
     selectCase(caseId);
+  }
+
+  async function openResults(simulationCase: SimulationCase) {
+    setBusy(true);
+    reportStatus(`Loading results for ${simulationCase.name}…`);
+    try {
+      const snapshot = await getCaseFlowSnapshot(projectId, simulationCase.id);
+      if (!snapshot) {
+        setNoResultsCaseName(simulationCase.name);
+        reportStatus("No results to show.");
+        return;
+      }
+      setOpenFoamGeometryCaseId(null);
+      setSelectedTreeId(`case:${simulationCase.id}:results`);
+      setResultsRequest((current) => ({
+        caseId: simulationCase.id,
+        id: (current?.id ?? 0) + 1,
+        snapshot,
+      }));
+      selectCase(simulationCase.id);
+      reportStatus(`Showing results for ${simulationCase.name}.`);
+    } catch (error) {
+      reportStatus(toUserMessage(error), true);
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function handleSave() {
@@ -463,8 +554,19 @@ export function WorkspaceShell() {
                           <button
                             key={stage}
                             type="button"
-                            className="project-tree__leaf project-tree__stage"
-                            onDoubleClick={() => openCase(simulationCase.id)}
+                            className={`project-tree__leaf project-tree__stage ${selectedTreeId === `case:${simulationCase.id}:${stage.toLowerCase()}` ? "is-selected" : ""}`}
+                            onClick={() => {
+                              if (stage === "Results") {
+                                void openResults(simulationCase);
+                              } else {
+                                setSelectedTreeId(
+                                  `case:${simulationCase.id}:${stage.toLowerCase()}`,
+                                );
+                              }
+                            }}
+                            onDoubleClick={
+                              stage === "Results" ? undefined : () => openCase(simulationCase.id)
+                            }
                           >
                             <span className="tree-icon">·</span>
                             <span>{stage}</span>
@@ -486,10 +588,12 @@ export function WorkspaceShell() {
               simulationLog={simulationJob?.caseId === activeCase.id ? simulationLog : null}
               onStatus={reportStatus}
               onSimulationChange={reportSimulation}
+              onIoBusyChange={setCaseIoBusy}
               addProbeRequest={addProbeRequest}
               onProbeCountChange={setFlowProbeCount}
               processingScriptsOpen={showProcessingScripts}
               showOpenFoamGeometry={openFoamGeometryVisible}
+              resultsRequest={resultsRequest?.caseId === activeCase.id ? resultsRequest : null}
               onCreateVariant={(caseId) => startNewCase(caseId)}
               onUpAxisChange={handleUpAxisChange}
             />
@@ -510,8 +614,24 @@ export function WorkspaceShell() {
         message={status}
         tone={statusError ? "error" : "neutral"}
         simulation={simulationJob}
+        busy={busy || caseIoBusy || clearingSimulationLog}
         onViewLogs={openSimulationLogs}
       />
+      {noResultsCaseName && (
+        <Modal title="No results to show" onClose={() => setNoResultsCaseName(null)}>
+          <div className="modal__body">
+            <p>
+              {noResultsCaseName} does not have any OpenFOAM results yet. Run the simulation first,
+              then select Results again.
+            </p>
+            <div className="modal__actions">
+              <Button variant="primary" onClick={() => setNoResultsCaseName(null)}>
+                Close
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
       {showSimulationLog && (
         <Modal title="OpenFOAM logs" onClose={() => setShowSimulationLog(false)}>
           <div className="modal__body simulation-log-viewer">

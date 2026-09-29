@@ -9,6 +9,12 @@ import { BoundaryBoxControlsProvider } from "../boundary-box-controls";
 import { getGeometryData } from "../geometry.api";
 import { createGeometryModel } from "../geometry-model";
 import { disposeInletArrowField, updateInletArrowField } from "../inlet-arrow-field";
+import {
+  createViewerCamera,
+  fitViewerCamera,
+  resizeViewerCamera,
+  type CameraProjection,
+} from "../viewer-camera";
 
 interface GeometryViewerProps {
   projectId: string;
@@ -241,6 +247,8 @@ export function GeometryViewer({
   children,
 }: GeometryViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const geometryRef = useRef(geometry);
+  geometryRef.current = geometry;
   const fitViewRef = useRef<() => void>(() => undefined);
   const selectSurfaceRef = useRef<(surface: string | null) => void>(() => undefined);
   const updateBoundaryBoxRef = useRef<(box: BoundaryBox | null) => void>(() => undefined);
@@ -257,6 +265,7 @@ export function GeometryViewer({
   const onBoundaryBoxChangeRef = useRef(onBoundaryBoxChange);
   onBoundaryBoxChangeRef.current = onBoundaryBoxChange;
   const [message, setMessage] = useState("Loading geometry…");
+  const [cameraProjection, setCameraProjection] = useState<CameraProjection>("perspective");
   const [modelTree, setModelTree] = useState<ModelTreeNode | null>(null);
   const [editingBoundaryBox, setEditingBoundaryBox] = useState(false);
   const [geometryReady, setGeometryReady] = useState(false);
@@ -284,16 +293,18 @@ export function GeometryViewer({
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
+    const currentGeometry = geometryRef.current;
 
-    setMessage(geometry.format === "STEP" ? "Tessellating STEP geometry…" : "Loading geometry…");
+    setMessage(
+      currentGeometry.format === "STEP" ? "Tessellating STEP geometry…" : "Loading geometry…",
+    );
     setModelTree(null);
     setGeometryReady(false);
     let disposed = false;
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x0d1012);
 
-    const camera = new THREE.PerspectiveCamera(40, 1, 0.01, 100000);
-    camera.up.set(0, upAxis === "Y" ? 1 : 0, upAxis === "Z" ? 1 : 0);
+    const camera = createViewerCamera(cameraProjection, 40, upAxis);
     camera.position.set(8, upAxis === "Y" ? 6 : -8, upAxis === "Y" ? 8 : 6);
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -575,10 +586,6 @@ export function GeometryViewer({
       const fitSphere = domainSphere ?? geometrySphere;
       if (!fitSphere || fitSphere.radius <= 0) return;
 
-      const verticalFov = THREE.MathUtils.degToRad(camera.fov);
-      const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * camera.aspect);
-      const limitingFov = Math.min(verticalFov, horizontalFov);
-      const distance = (fitSphere.radius / Math.sin(limitingFov / 2)) * 1.18;
       const viewDirection =
         upAxis === "Y"
           ? new THREE.Vector3(1, 0.72, 1).normalize()
@@ -586,9 +593,7 @@ export function GeometryViewer({
 
       controls.target.copy(fitSphere.center);
       viewHelper.center.copy(fitSphere.center);
-      camera.position.copy(fitSphere.center).addScaledVector(viewDirection, distance);
-      camera.near = Math.max(fitSphere.radius / 1000, 0.001);
-      camera.far = Math.max(distance + fitSphere.radius * 20, 100);
+      fitViewerCamera(camera, fitSphere, viewDirection, 1.18);
       controls.minDistance = fitSphere.radius * 0.05;
       controls.maxDistance = fitSphere.radius * 30;
       camera.updateProjectionMatrix();
@@ -763,8 +768,7 @@ export function GeometryViewer({
       const width = Math.max(clientWidth, 1);
       const height = Math.max(clientHeight, 1);
       renderer.setSize(width, height, false);
-      camera.aspect = width / height;
-      camera.updateProjectionMatrix();
+      resizeViewerCamera(camera, width, height);
       fitView();
     };
     const observer = new ResizeObserver(resize);
@@ -773,14 +777,14 @@ export function GeometryViewer({
 
     const geometryRequest = geometryData
       ? Promise.resolve({ bytes: geometryData })
-      : getGeometryData(projectId, geometry.id);
+      : getGeometryData(projectId, currentGeometry.id);
     void geometryRequest
       .then(({ bytes }) => {
         if (disposed) return null;
         setMessage(
-          geometry.format === "STEP" ? "Tessellating STEP geometry…" : "Loading geometry…",
+          currentGeometry.format === "STEP" ? "Tessellating STEP geometry…" : "Loading geometry…",
         );
-        return createGeometryModel(geometry, Uint8Array.from(bytes));
+        return createGeometryModel(currentGeometry, Uint8Array.from(bytes));
       })
       .then((model) => {
         if (disposed || !model) return;
@@ -797,7 +801,7 @@ export function GeometryViewer({
         }
         modelOffset.copy(model.position);
         scene.add(model);
-        setModelTree(createModelTree(model, geometry.name));
+        setModelTree(createModelTree(model, currentGeometry.name));
         model.traverse((object) => {
           if (!(object instanceof THREE.Mesh)) return;
           const surface = object.userData.tesrigSurface as string | undefined;
@@ -886,8 +890,11 @@ export function GeometryViewer({
     };
   }, [
     boundaryFaceColors,
+    cameraProjection,
     defaultSurfaceColor,
-    geometry,
+    geometry.format,
+    geometry.id,
+    geometry.name,
     geometryData,
     onSurfaceSelect,
     projectId,
@@ -958,6 +965,19 @@ export function GeometryViewer({
         {message && <div className="geometry-viewer__message">{message}</div>}
         {!message && (
           <div className="geometry-viewer__toolbar">
+            <div className="camera-projection-control" aria-label="Camera projection">
+              {(["perspective", "orthographic"] as CameraProjection[]).map((projection) => (
+                <button
+                  key={projection}
+                  className={cameraProjection === projection ? "is-active" : ""}
+                  type="button"
+                  aria-pressed={cameraProjection === projection}
+                  onClick={() => setCameraProjection(projection)}
+                >
+                  {projection === "perspective" ? "Perspective" : "Orthographic"}
+                </button>
+              ))}
+            </div>
             <div className="up-axis-control" aria-label="Up axis">
               <span>Up</span>
               <button
