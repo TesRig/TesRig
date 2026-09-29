@@ -32,6 +32,21 @@ import { ProcessingScriptsPanel } from "./ProcessingScriptsDialog";
 
 const FLOW_SNAPSHOT_REFRESH_MS = 3000;
 
+function generatedCaseStatus(warnings: string[]) {
+  if (warnings.length === 0) return "OpenFOAM case generated and ready for ParaView.";
+  const firstWarning = warnings[0]
+    .replace(
+      "No geometry surfaces have explicit boundary conditions; the geometry defaults to a no-slip wall.",
+      "Geometry surfaces use the default no-slip wall condition.",
+    )
+    .replace(
+      "Create a boundary box to control the external flow domain and its faces.",
+      "Create a boundary box before running the external-flow case.",
+    );
+  const remainder = warnings.length - 1;
+  return `OpenFOAM case generated with ${warnings.length} warning${warnings.length === 1 ? "" : "s"}. ${firstWarning}${remainder > 0 ? ` (+${remainder} more)` : ""}`;
+}
+
 interface CaseWorkspaceProps {
   simulationCase: SimulationCase;
   onCreateVariant: (caseId: string) => void;
@@ -120,7 +135,7 @@ export function CaseWorkspace({
         setShowFlowView(
           Boolean(
             requestedResults ||
-              (caseJob && ["Starting", "Running", "Completed"].includes(caseJob.status)),
+            (caseJob && ["Starting", "Running", "Completed"].includes(caseJob.status)),
           ),
         );
 
@@ -267,11 +282,7 @@ export function CaseWorkspace({
       const updated = await updateCaseSetup(project.id, simulationCase.id, setup);
       syncProject(updated);
       const validation = await validateCase(project.id, simulationCase.id);
-      onStatus(
-        validation.warnings.length > 0
-          ? `OpenFOAM case generated. ${validation.warnings.join(" ")}`
-          : "OpenFOAM case generated and ready for ParaView.",
-      );
+      onStatus(generatedCaseStatus(validation.warnings));
     } catch (error) {
       onStatus(toUserMessage(error), true);
     } finally {

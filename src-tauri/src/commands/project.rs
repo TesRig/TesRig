@@ -104,6 +104,5 @@ pub fn close_project(state: State<'_, AppState>) -> AppResult<()> {
         .project_service
         .lock()
         .map_err(|_| AppError::InternalError("project service lock was poisoned".to_owned()))?;
-    service.close_project();
-    Ok(())
+    service.close_project()
 }

@@ -35,6 +35,8 @@ import { Button } from "../common/Button";
 import { StatusBar } from "../common/StatusBar";
 import { Modal } from "../dialogs/Modal";
 
+const PROJECT_AUTOSAVE_DELAY_MS = 900;
+
 export function WorkspaceShell() {
   const { project, activeCaseId, activeCase, selectCase, setProject, syncProject } = useWorkspace();
   const [showNewCase, setShowNewCase] = useState(false);
@@ -46,6 +48,7 @@ export function WorkspaceShell() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [caseIoBusy, setCaseIoBusy] = useState(false);
+  const [autosaving, setAutosaving] = useState(false);
   const [status, setStatus] = useState("Project ready");
   const [statusError, setStatusError] = useState(false);
   const [errorDialog, setErrorDialog] = useState<string | null>(null);
@@ -68,6 +71,11 @@ export function WorkspaceShell() {
   const stderrLogRef = useRef<HTMLPreElement>(null);
   const activeNotificationJobsRef = useRef(new Set<string>());
   const solverCompleteNotificationJobsRef = useRef(new Set<string>());
+  const autosaveProjectIdRef = useRef<string | null>(null);
+  const savedProjectRevisionRef = useRef<string | null>(null);
+  const autosaveTimerRef = useRef<number | null>(null);
+  const currentProjectRef = useRef(project);
+  currentProjectRef.current = project;
 
   const reportSimulation = useCallback((job: SimulationJob | null) => {
     setSimulationJob(job);
@@ -163,6 +171,74 @@ export function WorkspaceShell() {
     if (isError) setErrorDialog(displayMessage);
   }, []);
 
+  const simulationIsActive = Boolean(
+    simulationJob && ["Starting", "Running", "Cancelling"].includes(simulationJob.status),
+  );
+  const autosaveProjectId = project?.id ?? null;
+  const autosaveProjectRevision = project?.updatedAt ?? null;
+
+  useEffect(() => {
+    if (!autosaveProjectId || !autosaveProjectRevision) {
+      autosaveProjectIdRef.current = null;
+      savedProjectRevisionRef.current = null;
+      return;
+    }
+    if (autosaveProjectIdRef.current !== autosaveProjectId) {
+      autosaveProjectIdRef.current = autosaveProjectId;
+      savedProjectRevisionRef.current = autosaveProjectRevision;
+      return;
+    }
+    if (
+      autosaveProjectRevision === savedProjectRevisionRef.current ||
+      busy ||
+      caseIoBusy ||
+      clearingSimulationLog ||
+      simulationIsActive ||
+      autosaving
+    ) {
+      return;
+    }
+
+    const projectIdToSave = autosaveProjectId;
+    const revisionToSave = autosaveProjectRevision;
+    autosaveTimerRef.current = window.setTimeout(() => {
+      autosaveTimerRef.current = null;
+      setAutosaving(true);
+      reportStatus("Saving project in the background…");
+      void saveProject({ projectId: projectIdToSave })
+        .then((savedProject) => {
+          savedProjectRevisionRef.current = savedProject.updatedAt;
+          const currentProject = currentProjectRef.current;
+          if (
+            currentProject?.id === projectIdToSave &&
+            currentProject.updatedAt === revisionToSave
+          ) {
+            syncProject(savedProject);
+          }
+          reportStatus("Project autosaved.");
+        })
+        .catch((error) => reportStatus(`Autosave failed: ${toUserMessage(error)}`, true))
+        .finally(() => setAutosaving(false));
+    }, PROJECT_AUTOSAVE_DELAY_MS);
+
+    return () => {
+      if (autosaveTimerRef.current !== null) {
+        window.clearTimeout(autosaveTimerRef.current);
+        autosaveTimerRef.current = null;
+      }
+    };
+  }, [
+    autosaving,
+    autosaveProjectId,
+    autosaveProjectRevision,
+    busy,
+    caseIoBusy,
+    clearingSimulationLog,
+    reportStatus,
+    simulationIsActive,
+    syncProject,
+  ]);
+
   const simulationPreviewActive = Boolean(
     activeCase &&
     simulationJob?.caseId === activeCase.id &&
@@ -187,6 +263,7 @@ export function WorkspaceShell() {
 
   if (!project) return null;
   const projectId = project.id;
+  const projectRevision = project.updatedAt;
   const projectSettings = project.settings;
   const selectedGeometry =
     project.geometries.find(({ id }) => id === selectedGeometryId) ?? project.geometries[0];
@@ -252,10 +329,16 @@ export function WorkspaceShell() {
   }
 
   async function handleSave() {
+    if (autosaveTimerRef.current !== null) {
+      window.clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
     setBusy(true);
     reportStatus("Saving project…");
     try {
-      syncProject(await saveProject({ projectId }));
+      const savedProject = await saveProject({ projectId });
+      savedProjectRevisionRef.current = savedProject.updatedAt;
+      syncProject(savedProject);
       reportStatus("Project saved.");
     } catch (error) {
       reportStatus(toUserMessage(error), true);
@@ -280,9 +363,17 @@ export function WorkspaceShell() {
   }
 
   async function handleClose() {
+    if (autosaveTimerRef.current !== null) {
+      window.clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
     setBusy(true);
     reportStatus("Closing project…");
     try {
+      if (projectRevision !== savedProjectRevisionRef.current) {
+        reportStatus("Saving project before closing…");
+        await saveProject({ projectId });
+      }
       await closeProject();
       setProject(null);
     } catch (error) {
@@ -347,13 +438,13 @@ export function WorkspaceShell() {
       <nav className="command-bar" aria-label="Workspace commands">
         <div className="command-group">
           <span className="command-group__label">Project</span>
-          <Button variant="ghost" onClick={handleSave} disabled={busy}>
+          <Button variant="ghost" onClick={handleSave} disabled={busy || autosaving}>
             <span className="command-icon" aria-hidden="true">
               ▣
             </span>
             {busy ? "Working…" : "Save"}
           </Button>
-          <Button variant="ghost" onClick={handleClose} disabled={busy}>
+          <Button variant="ghost" onClick={handleClose} disabled={busy || autosaving}>
             <span className="command-icon" aria-hidden="true">
               ×
             </span>
@@ -614,7 +705,7 @@ export function WorkspaceShell() {
         message={status}
         tone={statusError ? "error" : "neutral"}
         simulation={simulationJob}
-        busy={busy || caseIoBusy || clearingSimulationLog}
+        busy={busy || caseIoBusy || clearingSimulationLog || autosaving}
         onViewLogs={openSimulationLogs}
       />
       {noResultsCaseName && (

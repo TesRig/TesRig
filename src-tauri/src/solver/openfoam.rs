@@ -14,6 +14,20 @@ const MAX_BACKGROUND_CELLS: u64 = 500_000;
 const MAX_BACKGROUND_AXIS_CELLS: u32 = 500;
 const RECOMMENDED_WRITE_SAMPLES: u32 = 10;
 const MAX_STORED_WRITE_TIMES: u32 = 1;
+const DISPENSABLE_MESH_METADATA: [&str; 5] = [
+    "cellLevel",
+    "pointLevel",
+    "level0Edge",
+    "surfaceIndex",
+    "refinementHistory",
+];
+const DISPENSABLE_MESH_FIELDS: [&str; 5] = [
+    "cellLevel",
+    "pointLevel",
+    "nSurfaceLayers",
+    "thickness",
+    "thicknessFraction",
+];
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -155,10 +169,40 @@ impl OpenFoamAdapter {
             .join(simulation_case.id.to_string())
             .join("openfoam");
         if root.exists() {
-            for relative in ["0", "constant", "system"] {
+            let preserve_completed_mesh = fs::read_dir(&root)
+                .map_err(AppError::io)?
+                .filter_map(Result::ok)
+                .any(|entry| {
+                    entry.path().is_dir()
+                        && entry
+                            .file_name()
+                            .to_string_lossy()
+                            .parse::<f64>()
+                            .is_ok_and(|time| time > 0.0)
+                        && entry.path().join("U").is_file()
+                });
+            for relative in ["0", "system"] {
                 let path = root.join(relative);
                 if path.exists() {
                     fs::remove_dir_all(path).map_err(AppError::io)?;
+                }
+            }
+            let constant = root.join("constant");
+            if constant.exists() {
+                if preserve_completed_mesh {
+                    for entry in fs::read_dir(&constant).map_err(AppError::io)? {
+                        let entry = entry.map_err(AppError::io)?;
+                        if entry.file_name() == "polyMesh" {
+                            continue;
+                        }
+                        if entry.path().is_dir() {
+                            fs::remove_dir_all(entry.path()).map_err(AppError::io)?;
+                        } else {
+                            fs::remove_file(entry.path()).map_err(AppError::io)?;
+                        }
+                    }
+                } else {
+                    fs::remove_dir_all(&constant).map_err(AppError::io)?;
                 }
             }
             for relative in [
@@ -406,9 +450,10 @@ impl OpenFoamAdapter {
             .collect::<Vec<_>>();
         result_times.sort_by(|left, right| left.0.total_cmp(&right.0));
         let has_reconstructed_solution = result_times.last().is_some();
-        if let Some((_, latest)) = result_times.pop() {
+        let latest_result = result_times.pop().map(|(_, path)| path);
+        if let Some(latest) = latest_result.as_ref() {
             for (_, path) in result_times {
-                if path != latest {
+                if path != latest.as_path() {
                     fs::remove_dir_all(path).map_err(AppError::io)?;
                 }
             }
@@ -427,8 +472,70 @@ impl OpenFoamAdapter {
                 fs::remove_dir_all(entry.path()).map_err(AppError::io)?;
             }
         }
+
+        if has_reconstructed_solution {
+            for name in DISPENSABLE_MESH_METADATA {
+                let path = case_root.join("constant/polyMesh").join(name);
+                if path.exists() {
+                    if path.is_dir() {
+                        fs::remove_dir_all(path).map_err(AppError::io)?;
+                    } else {
+                        fs::remove_file(path).map_err(AppError::io)?;
+                    }
+                }
+            }
+            for name in DISPENSABLE_MESH_FIELDS {
+                let path = case_root.join("0").join(name);
+                if path.exists() {
+                    fs::remove_file(path).map_err(AppError::io)?;
+                }
+            }
+            if let Some(latest) = latest_result {
+                // Face flux is derivable from U and the mesh, while often being as large as U.
+                // Keeping U, p and turbulence fields preserves visualization and analysis data.
+                let flux = latest.join("phi");
+                if flux.exists() {
+                    fs::remove_file(flux).map_err(AppError::io)?;
+                }
+            }
+            retain_latest_post_processing_times(&case_root.join("postProcessing"))?;
+        }
+
+        let stage = case_root.join("tesrig.stage");
+        if stage.exists() {
+            fs::remove_file(stage).map_err(AppError::io)?;
+        }
         Ok(())
     }
+}
+
+fn retain_latest_post_processing_times(directory: &Path) -> AppResult<()> {
+    if !directory.is_dir() {
+        return Ok(());
+    }
+
+    let mut numeric_directories = fs::read_dir(directory)
+        .map_err(AppError::io)?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            let time = entry.file_name().to_string_lossy().parse::<f64>().ok()?;
+            (path.is_dir() && time.is_finite()).then_some((time, path))
+        })
+        .collect::<Vec<_>>();
+    numeric_directories.sort_by(|left, right| left.0.total_cmp(&right.0));
+    numeric_directories.pop();
+    for (_, path) in numeric_directories {
+        fs::remove_dir_all(path).map_err(AppError::io)?;
+    }
+
+    for entry in fs::read_dir(directory).map_err(AppError::io)? {
+        let entry = entry.map_err(AppError::io)?;
+        if entry.path().is_dir() && entry.file_name().to_string_lossy().parse::<f64>().is_err() {
+            retain_latest_post_processing_times(&entry.path())?;
+        }
+    }
+    Ok(())
 }
 
 fn write(path: &Path, content: String) -> AppResult<()> {
@@ -1315,13 +1422,19 @@ mod tests {
         );
         let workspace = tempfile::tempdir().unwrap();
         let result = OpenFoamAdapter::generate(workspace.path(), &case, None).unwrap();
-        let time_directory = workspace.path().join(&result.generated_path).join("100");
+        let case_root = workspace.path().join(&result.generated_path);
+        let time_directory = case_root.join("100");
         fs::create_dir_all(&time_directory).unwrap();
         fs::write(time_directory.join("U"), b"result").unwrap();
+        fs::create_dir_all(case_root.join("constant/polyMesh")).unwrap();
+        fs::write(case_root.join("constant/polyMesh/points"), b"mesh").unwrap();
+        fs::write(case_root.join("constant/staleDictionary"), b"stale").unwrap();
 
         OpenFoamAdapter::generate(workspace.path(), &case, None).unwrap();
 
         assert!(time_directory.join("U").is_file());
+        assert!(case_root.join("constant/polyMesh/points").is_file());
+        assert!(!case_root.join("constant/staleDictionary").exists());
     }
 
     #[test]
@@ -1348,7 +1461,36 @@ mod tests {
         }
         fs::write(directory.path().join("100/U"), b"velocity").unwrap();
         fs::write(directory.path().join("200/U"), b"velocity").unwrap();
-        fs::create_dir(directory.path().join("postProcessing")).unwrap();
+        fs::write(directory.path().join("200/phi"), b"derived flux").unwrap();
+        for name in [
+            "postProcessing/TesRigVelocityAverage/100",
+            "postProcessing/TesRigVelocityAverage/200",
+            "constant/polyMesh",
+        ] {
+            fs::create_dir_all(directory.path().join(name)).unwrap();
+        }
+        fs::write(
+            directory
+                .path()
+                .join("postProcessing/TesRigVelocityAverage/100/volFieldValue.dat"),
+            b"old",
+        )
+        .unwrap();
+        fs::write(
+            directory
+                .path()
+                .join("postProcessing/TesRigVelocityAverage/200/volFieldValue.dat"),
+            b"latest",
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("constant/polyMesh/cellLevel"),
+            b"metadata",
+        )
+        .unwrap();
+        fs::write(directory.path().join("constant/polyMesh/points"), b"mesh").unwrap();
+        fs::write(directory.path().join("0/pointLevel"), b"mesh diagnostic").unwrap();
+        fs::write(directory.path().join("tesrig.stage"), b"complete").unwrap();
         fs::create_dir(directory.path().join("processor-not-a-rank")).unwrap();
 
         OpenFoamAdapter::compact_results(directory.path()).unwrap();
@@ -1356,10 +1498,26 @@ mod tests {
         assert!(directory.path().join("0").is_dir());
         assert!(!directory.path().join("100").exists());
         assert!(directory.path().join("200").is_dir());
+        assert!(!directory.path().join("200/phi").exists());
         assert!(!directory.path().join("processor0").exists());
         assert!(!directory.path().join("processor3").exists());
         assert!(!directory.path().join("VTK").exists());
         assert!(directory.path().join("postProcessing").is_dir());
+        assert!(!directory
+            .path()
+            .join("postProcessing/TesRigVelocityAverage/100")
+            .exists());
+        assert!(directory
+            .path()
+            .join("postProcessing/TesRigVelocityAverage/200/volFieldValue.dat")
+            .is_file());
+        assert!(!directory
+            .path()
+            .join("constant/polyMesh/cellLevel")
+            .exists());
+        assert!(directory.path().join("constant/polyMesh/points").is_file());
+        assert!(!directory.path().join("0/pointLevel").exists());
+        assert!(!directory.path().join("tesrig.stage").exists());
         assert!(directory.path().join("processor-not-a-rank").is_dir());
     }
 

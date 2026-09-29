@@ -97,6 +97,13 @@ impl ArchiveService {
                 .map_err(|error| AppError::InternalError(error.to_string()))?;
             let archive_name = relative.to_string_lossy().replace('\\', "/");
 
+            // The per-case surface is a generated duplicate of the project's source geometry and
+            // is recreated when a project is opened. Runtime stage markers are transient. Keeping
+            // either in every archive needlessly inflates large CFD projects.
+            if is_rebuildable_case_artifact(&archive_name) {
+                continue;
+            }
+
             if path.is_dir() {
                 writer
                     .add_directory(format!("{archive_name}/"), options)
@@ -126,5 +133,38 @@ impl ArchiveService {
         } else {
             destination.with_extension("tsrig")
         }
+    }
+}
+
+fn is_rebuildable_case_artifact(path: &str) -> bool {
+    let parts = path.split('/').collect::<Vec<_>>();
+    parts.len() >= 4
+        && parts[0] == "cases"
+        && parts[2] == "openfoam"
+        && ((parts.len() >= 5 && parts[3] == "constant" && parts[4] == "triSurface")
+            || (parts.len() == 4 && parts[3] == "tesrig.stage"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identifies_only_regenerable_case_artifacts() {
+        assert!(is_rebuildable_case_artifact(
+            "cases/case-id/openfoam/constant/triSurface"
+        ));
+        assert!(is_rebuildable_case_artifact(
+            "cases/case-id/openfoam/constant/triSurface/geometry.stl"
+        ));
+        assert!(is_rebuildable_case_artifact(
+            "cases/case-id/openfoam/tesrig.stage"
+        ));
+        assert!(!is_rebuildable_case_artifact(
+            "cases/case-id/openfoam/constant/polyMesh/points"
+        ));
+        assert!(!is_rebuildable_case_artifact(
+            "geometries/source/triSurface/geometry.stl"
+        ));
     }
 }

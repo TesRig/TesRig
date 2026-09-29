@@ -969,8 +969,8 @@ export function CfdSetupPanel({
                     </Button>
                   )}
                   <p className="cfd-panel__note">
-                    TesRig retains the 10 newest result times to control disk use. The full solver
-                    history remains available in the log and chart.
+                    TesRig retains the final solution for visualization and later post-processing,
+                    plus compact solver history in the log and chart.
                   </p>
                 </div>
               )}

@@ -1981,9 +1981,10 @@ p {
   top: 12px;
   right: 12px;
   bottom: 12px;
+  left: 12px;
   display: flex;
-  width: 440px;
-  max-width: calc(100% - 24px);
+  width: auto;
+  max-width: none;
   flex-direction: column;
   align-items: flex-end;
   gap: 10px;
@@ -1996,7 +1997,7 @@ p {
 
 .cfd-panel {
   display: flex;
-  width: 100%;
+  width: min(440px, 100%);
   min-height: 0;
   max-width: 100%;
   flex: 0 1 auto;
@@ -2085,7 +2086,7 @@ p {
 }
 
 .simulation-chart-popup {
-  width: 100%;
+  width: min(440px, 100%);
   max-width: 100%;
   align-self: flex-end;
   border: 1px solid rgb(255 255 255 / 20%);
@@ -2772,8 +2773,9 @@ p {
 }
 
 @media (max-width: 850px) {
-  .cfd-overlay-stack {
-    width: 390px;
+  .cfd-panel,
+  .simulation-chart-popup {
+    width: min(390px, 100%);
   }
 
   .geometry-viewer:has(.cfd-panel) .model-tree {
@@ -2946,6 +2948,7 @@ p {
 
 .status-bar {
   display: flex;
+  min-width: 0;
   align-items: center;
   gap: 8px;
   padding: 0 12px;
@@ -2963,6 +2966,8 @@ p {
 }
 
 .status-bar__message {
+  min-width: 0;
+  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2972,7 +2977,7 @@ p {
   display: grid;
   min-width: 220px;
   max-width: 420px;
-  flex: 1;
+  flex: 0 1 420px;
   grid-template-columns: minmax(90px, 1fr) 30px auto;
   align-items: center;
   gap: 7px;

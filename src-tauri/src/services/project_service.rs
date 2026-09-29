@@ -20,6 +20,7 @@ use uuid::Uuid;
 #[derive(Debug, Default)]
 pub struct ProjectService {
     workspaces: WorkspaceService,
+    dirty: bool,
 }
 
 impl ProjectService {
@@ -44,9 +45,11 @@ impl ProjectService {
         let mut workspace = self.workspaces.create_empty(archive_path)?;
         workspace.manifest = ProjectManifest::new(name, description.trim().to_owned());
         ArchiveService::initialize_layout(workspace.root())?;
-        persist_workspace(&workspace)?;
+        stage_workspace(&workspace)?;
+        ArchiveService::write(workspace.root(), &workspace.archive_path)?;
         let summary = summarize(&workspace);
         self.workspaces.activate(workspace);
+        self.dirty = false;
         Ok(summary)
     }
 
@@ -63,15 +66,24 @@ impl ProjectService {
         generate_solver_files(workspace.root(), &workspace.manifest, &workspace.cases)?;
         let summary = summarize(&workspace);
         self.workspaces.activate(workspace);
+        self.dirty = false;
         Ok(summary)
     }
 
     pub fn save_project(&mut self, project_id: Uuid) -> AppResult<ProjectSummary> {
         let workspace = self.workspaces.current()?;
         ensure_project(workspace, project_id)?;
+        for simulation_case in &workspace.cases {
+            OpenFoamAdapter::compact_results(&openfoam_case_root(
+                workspace.root(),
+                simulation_case.id,
+            ))?;
+        }
         write_models(workspace.root(), &workspace.manifest, &workspace.cases)?;
         ArchiveService::write(workspace.root(), &workspace.archive_path)?;
-        Ok(summarize(workspace))
+        let summary = summarize(workspace);
+        self.dirty = false;
+        Ok(summary)
     }
 
     pub fn update_project_settings(
@@ -83,12 +95,21 @@ impl ProjectService {
         ensure_project(workspace, project_id)?;
         workspace.manifest.settings = settings;
         workspace.manifest.updated_at = Utc::now();
-        persist_workspace(workspace)?;
-        Ok(summarize(workspace))
+        stage_workspace(workspace)?;
+        let summary = summarize(workspace);
+        self.dirty = true;
+        Ok(summary)
     }
 
-    pub fn close_project(&mut self) {
+    pub fn close_project(&mut self) -> AppResult<()> {
+        if self.dirty {
+            if let Some(project) = self.current_project() {
+                self.save_project(project.id)?;
+            }
+        }
         self.workspaces.close();
+        self.dirty = false;
+        Ok(())
     }
 
     pub fn current_project(&self) -> Option<ProjectSummary> {
@@ -148,6 +169,7 @@ impl ProjectService {
         ArchiveService::write(workspace.root(), &workspace.archive_path)?;
         workspace.manifest = next_manifest;
         workspace.cases = next_cases;
+        self.dirty = false;
         Ok(simulation_case)
     }
 
@@ -228,8 +250,10 @@ impl ProjectService {
         };
         target_case.updated_at = Utc::now();
         workspace.manifest.updated_at = Utc::now();
-        persist_workspace(workspace)?;
-        Ok(summarize(workspace))
+        stage_workspace(workspace)?;
+        let summary = summarize(workspace);
+        self.dirty = true;
+        Ok(summary)
     }
 
     pub fn validate_case(&self, project_id: Uuid, case_id: Uuid) -> AppResult<CaseValidation> {
@@ -303,7 +327,8 @@ impl ProjectService {
             .join(case_id.to_string())
             .join("openfoam");
         OpenFoamAdapter::clear_results(&case_root)?;
-        persist_workspace(workspace)?;
+        stage_workspace(workspace)?;
+        self.dirty = true;
         Ok(case_root)
     }
 
@@ -453,8 +478,10 @@ impl ProjectService {
         .map_err(AppError::io)?;
         workspace.manifest.geometries.push(asset);
         workspace.manifest.updated_at = Utc::now();
-        persist_workspace(workspace)?;
-        Ok(summarize(workspace))
+        stage_workspace(workspace)?;
+        let summary = summarize(workspace);
+        self.dirty = true;
+        Ok(summary)
     }
 
     pub fn assign_geometry(
@@ -475,8 +502,10 @@ impl ProjectService {
         target_case.status = CaseStatus::Ready;
         target_case.updated_at = Utc::now();
         workspace.manifest.updated_at = Utc::now();
-        persist_workspace(workspace)?;
-        Ok(summarize(workspace))
+        stage_workspace(workspace)?;
+        let summary = summarize(workspace);
+        self.dirty = true;
+        Ok(summary)
     }
 
     pub fn remove_geometry(
@@ -515,8 +544,10 @@ impl ProjectService {
         if triangulated_path.exists() {
             fs::remove_file(triangulated_path).map_err(AppError::io)?;
         }
-        persist_workspace(workspace)?;
-        Ok(summarize(workspace))
+        stage_workspace(workspace)?;
+        let summary = summarize(workspace);
+        self.dirty = true;
+        Ok(summary)
     }
 
     pub fn get_geometry_data(&self, project_id: Uuid, geometry_id: Uuid) -> AppResult<Vec<u8>> {
@@ -624,10 +655,9 @@ fn ensure_geometry(workspace: &OpenWorkspace, geometry_id: Uuid) -> AppResult<&G
         .ok_or_else(|| AppError::GeometryNotFound(geometry_id.to_string()))
 }
 
-fn persist_workspace(workspace: &OpenWorkspace) -> AppResult<()> {
+fn stage_workspace(workspace: &OpenWorkspace) -> AppResult<()> {
     write_models(workspace.root(), &workspace.manifest, &workspace.cases)?;
-    generate_solver_files(workspace.root(), &workspace.manifest, &workspace.cases)?;
-    ArchiveService::write(workspace.root(), &workspace.archive_path)
+    generate_solver_files(workspace.root(), &workspace.manifest, &workspace.cases)
 }
 
 fn generate_solver_files(
@@ -769,7 +799,7 @@ mod tests {
         service
             .update_project_settings(project.id, ProjectSettings { up_axis: UpAxis::Z })
             .expect("project settings update");
-        service.close_project();
+        service.close_project().expect("project close");
         let reopened = service
             .open_project(&archive_path)
             .expect("project reopening");
@@ -871,7 +901,7 @@ mod tests {
         assert_eq!(variant.variant_of_case_id, Some(base_case.id));
         assert_eq!(variant.cfd_setup, inherited_setup);
 
-        service.close_project();
+        service.close_project().expect("project close");
         let reopened = service
             .open_project(&archive_path)
             .expect("project reopening");
