@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type UIEvent } from "react";
-import appIconUrl from "../../../src-tauri/icons/app-icon.svg";
 import { NewCaseDialog } from "../../features/cases/components/NewCaseDialog";
 import { CaseWorkspace } from "../../features/cases/components/CaseWorkspace";
 import { clearSimulationLog, getSimulationLog } from "../../features/cases/case.api";
@@ -17,6 +16,7 @@ import {
 } from "../../features/projects/project.api";
 import type { UpAxis } from "../../features/projects/project.types";
 import { toUserMessage } from "../../lib/errors/app-error";
+import { setAppWindowTitle } from "../../lib/tauri/window";
 import { useWorkspace } from "../../stores/workspace.store";
 import { Button } from "../common/Button";
 import { StatusBar } from "../common/StatusBar";
@@ -98,11 +98,6 @@ export function WorkspaceShell() {
     if (isError) setErrorDialog(displayMessage);
   }, []);
 
-  if (!project) return null;
-  const projectId = project.id;
-  const projectSettings = project.settings;
-  const selectedGeometry =
-    project.geometries.find(({ id }) => id === selectedGeometryId) ?? project.geometries[0];
   const simulationPreviewActive = Boolean(
     activeCase &&
     simulationJob?.caseId === activeCase.id &&
@@ -117,6 +112,19 @@ export function WorkspaceShell() {
   const currentViewName = activeCase
     ? `${openFoamGeometryVisible ? "OpenFOAM geometry" : simulationPreviewActive ? "Flow preview" : simulationResultVisible ? "Flow result" : "Case"} / ${activeCase.name}`
     : "Geometry";
+  const projectName = project?.name;
+  const projectArchivePath = project?.archivePath;
+
+  useEffect(() => {
+    if (projectName === undefined || projectArchivePath === undefined) return;
+    setAppWindowTitle(`TesRig - ${projectName} / ${currentViewName} - ${projectArchivePath}`);
+  }, [currentViewName, projectArchivePath, projectName]);
+
+  if (!project) return null;
+  const projectId = project.id;
+  const projectSettings = project.settings;
+  const selectedGeometry =
+    project.geometries.find(({ id }) => id === selectedGeometryId) ?? project.geometries[0];
 
   function openSimulationLogs() {
     setFollowingSimulationLog(true);
@@ -245,19 +253,6 @@ export function WorkspaceShell() {
 
   return (
     <div className="app-shell">
-      <header className="titlebar">
-        <div className="titlebar__brand">
-          <img src={appIconUrl} alt="" className="titlebar__icon" />
-          <strong>TesRig</strong>
-        </div>
-        <div className="titlebar__context" title={project.archivePath}>
-          <span>{project.name}</span>
-          <span className="titlebar__separator">/</span>
-          <strong>{currentViewName}</strong>
-        </div>
-        <div className="titlebar__project-path">{project.archivePath}</div>
-      </header>
-
       <nav className="command-bar" aria-label="Workspace commands">
         <div className="command-group">
           <span className="command-group__label">Project</span>
@@ -376,10 +371,6 @@ export function WorkspaceShell() {
             Latest solver snapshot · results may be inaccurate
           </div>
         ) : null}
-        <div className="command-bar__view">
-          <span>Current view</span>
-          <strong>{currentViewName}</strong>
-        </div>
       </nav>
 
       <div className={`app-shell__body ${sidebarCollapsed ? "is-sidebar-collapsed" : ""}`}>

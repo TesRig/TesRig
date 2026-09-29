@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "../../../components/common/Button";
 import { toUserMessage } from "../../../lib/errors/app-error";
+import { setAppWindowTitle } from "../../../lib/tauri/window";
 import { useWorkspace } from "../../../stores/workspace.store";
 import { chooseProjectToOpen, openProject } from "../project.api";
 import { NewProjectDialog } from "./NewProjectDialog";
@@ -10,6 +11,10 @@ export function WelcomeScreen() {
   const [showNewProject, setShowNewProject] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setAppWindowTitle("TesRig");
+  }, []);
 
   async function handleOpen() {
     setError(null);
