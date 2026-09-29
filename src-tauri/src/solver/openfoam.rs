@@ -318,6 +318,9 @@ impl OpenFoamAdapter {
                     .to_owned(),
             );
         }
+        if let Some(warning) = flow_alignment_warning(&simulation_case.cfd_setup) {
+            warnings.push(warning);
+        }
         let mesh_plan = background_mesh_plan(&simulation_case.cfd_setup);
         if mesh_plan.limited {
             let cell_count = mesh_plan
@@ -695,6 +698,51 @@ fn domain_face_defaults() -> [(&'static str, &'static str, BoundaryType); 6] {
 
 fn is_domain_surface(surface: &str) -> bool {
     surface.starts_with("domain:")
+}
+
+fn domain_face(surface: &str) -> Option<(usize, bool)> {
+    match surface {
+        "domain:xMin" => Some((0, false)),
+        "domain:xMax" => Some((0, true)),
+        "domain:yMin" => Some((1, false)),
+        "domain:yMax" => Some((1, true)),
+        "domain:zMin" => Some((2, false)),
+        "domain:zMax" => Some((2, true)),
+        _ => None,
+    }
+}
+
+fn flow_alignment_warning(setup: &CfdSetup) -> Option<String> {
+    if setup.flow_domain != FlowDomain::External {
+        return None;
+    }
+    let (velocity_axis, velocity_component) = setup
+        .initial_conditions
+        .velocity
+        .iter()
+        .enumerate()
+        .max_by(|(_, left), (_, right)| left.abs().total_cmp(&right.abs()))?;
+    if velocity_component.abs() <= 1e-12 {
+        return None;
+    }
+    let inlet = setup.boundaries.iter().find_map(|boundary| {
+        (boundary.boundary_type == BoundaryType::Inlet)
+            .then(|| domain_face(&boundary.surface))
+            .flatten()
+    })?;
+    let paired_outlet = setup.boundaries.iter().find_map(|boundary| {
+        let face = domain_face(&boundary.surface)?;
+        (boundary.boundary_type == BoundaryType::Outlet && face.0 == inlet.0 && face.1 != inlet.1)
+            .then_some(face)
+    })?;
+    if paired_outlet.0 == velocity_axis {
+        return None;
+    }
+    let axes = ["X", "Y", "Z"];
+    Some(format!(
+        "The domain inlet/outlet are aligned with the {} axis, but the initial velocity points primarily along {}. The inlet velocity is tangential to its face; align the boundary pair or velocity before trusting the result.",
+        axes[paired_outlet.0], axes[velocity_axis]
+    ))
 }
 
 fn domain_default_name(surface: &str) -> &'static str {
@@ -1149,6 +1197,38 @@ mod tests {
     fn patch_names_are_openfoam_words() {
         assert_eq!(sanitize_word("Wing Upper 1"), "Wing_Upper_1");
         assert_eq!(sanitize_word("12 inlet"), "_12_inlet");
+    }
+
+    #[test]
+    fn warns_when_external_boundary_axis_conflicts_with_velocity() {
+        let mut setup = CfdSetup::default();
+        setup.boundary_box = Some(crate::domain::case::BoundaryBox {
+            min: [-1.0; 3],
+            max: [1.0; 3],
+        });
+        setup.boundaries = vec![
+            crate::domain::case::BoundaryCondition {
+                surface: "domain:yMin".to_owned(),
+                patch_name: "inlet".to_owned(),
+                boundary_type: BoundaryType::Inlet,
+                velocity: [10.0, 0.0, 0.0],
+                gauge_pressure: 0.0,
+            },
+            crate::domain::case::BoundaryCondition {
+                surface: "domain:yMax".to_owned(),
+                patch_name: "outlet".to_owned(),
+                boundary_type: BoundaryType::Outlet,
+                velocity: [10.0, 0.0, 0.0],
+                gauge_pressure: 0.0,
+            },
+        ];
+
+        let warning = flow_alignment_warning(&setup).unwrap();
+        assert!(warning.contains("aligned with the Y axis"));
+        assert!(warning.contains("primarily along X"));
+
+        setup.initial_conditions.velocity = [0.0, 10.0, 0.0];
+        assert!(flow_alignment_warning(&setup).is_none());
     }
 
     #[test]

@@ -271,15 +271,23 @@ impl SimulationManager {
     /// Keeping this provider behind the simulation manager leaves room for Python
     /// post-processing providers to expose the same snapshot contract later.
     pub fn flow_snapshot(&self) -> AppResult<Option<FlowSnapshot>> {
-        let case_directory = self
-            .state
-            .lock()
-            .map_err(lock_error)?
-            .case_directory
-            .clone();
-        Ok(case_directory
+        let (case_directory, stdout_path) = {
+            let state = self.state.lock().map_err(lock_error)?;
+            (state.case_directory.clone(), state.stdout_path.clone())
+        };
+        let field_snapshot = case_directory
             .as_deref()
-            .and_then(read_latest_flow_snapshot))
+            .and_then(read_latest_flow_snapshot);
+        let logged_velocity = stdout_path.as_deref().and_then(read_latest_logged_velocity);
+
+        Ok(match (field_snapshot, logged_velocity) {
+            (Some(snapshot), Some((time, velocity))) if time > snapshot.time => {
+                Some(logged_flow_snapshot(time, velocity))
+            }
+            (snapshot @ Some(_), _) => snapshot,
+            (None, Some((time, velocity))) => Some(logged_flow_snapshot(time, velocity)),
+            (None, None) => None,
+        })
     }
 
     pub fn clear_logs(&self) -> AppResult<SimulationLog> {
@@ -428,11 +436,13 @@ fn display_stage(stage: &str) -> &str {
 }
 
 fn latest_simulation_time(log: &str) -> Option<f64> {
-    log.lines().rev().find_map(|line| {
-        line.trim()
-            .strip_prefix("Time =")
-            .and_then(|value| value.trim().trim_end_matches('s').parse::<f64>().ok())
-    })
+    log.lines().rev().find_map(parse_simulation_time)
+}
+
+fn parse_simulation_time(line: &str) -> Option<f64> {
+    line.trim()
+        .strip_prefix("Time =")
+        .and_then(|value| value.trim().trim_end_matches('s').parse::<f64>().ok())
 }
 
 const MAX_FIELD_SAMPLES: usize = 4096;
@@ -490,6 +500,49 @@ fn read_latest_flow_snapshot(case_directory: &Path) -> Option<FlowSnapshot> {
             "reconstructed".to_owned()
         },
     })
+}
+
+fn logged_flow_snapshot(time: f64, velocity_mean: [f64; 3]) -> FlowSnapshot {
+    let magnitude = velocity_mean
+        .iter()
+        .map(|value| value * value)
+        .sum::<f64>()
+        .sqrt();
+    FlowSnapshot {
+        time,
+        velocity_mean,
+        velocity_magnitude: FieldStatistics {
+            minimum: magnitude,
+            maximum: magnitude,
+            mean: magnitude,
+        },
+        pressure: None,
+        sample_count: 1,
+        source: "solver-log".to_owned(),
+    }
+}
+
+fn read_latest_logged_velocity(path: &Path) -> Option<(f64, [f64; 3])> {
+    let log = read_log_tail(path, 256 * 1024);
+    let mut current_time = None;
+    let mut latest = None;
+
+    for line in log.lines() {
+        if let Some(time) = parse_simulation_time(line) {
+            current_time = Some(time);
+            continue;
+        }
+        if !(line.contains("volAverage") || line.contains("volumeAverage")) {
+            continue;
+        }
+        let Some((_, value)) = line.rsplit_once('=') else {
+            continue;
+        };
+        if let (Some(time), Some(velocity)) = (current_time, parse_vector(value)) {
+            latest = Some((time, velocity));
+        }
+    }
+    latest
 }
 
 fn field_is_stable(path: &Path) -> bool {
@@ -852,5 +905,31 @@ mod tests {
         assert_eq!(snapshot.velocity_magnitude.minimum, 3.0);
         assert_eq!(snapshot.velocity_magnitude.maximum, 5.0);
         assert_eq!(snapshot.pressure.unwrap().mean, 15.0);
+    }
+
+    #[test]
+    fn reads_latest_velocity_average_from_solver_log() {
+        let directory = tempfile::tempdir().unwrap();
+        let log = directory.path().join("stdout.log");
+        fs::write(
+            &log,
+            "Time = 7\n    volAverage(TesRigVelocityAverage) of U = (9 0.5 0)\nTime = 8s\n    volumeAverage(U) = (10 1 -0.25)\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_latest_logged_velocity(&log),
+            Some((8.0, [10.0, 1.0, -0.25]))
+        );
+    }
+
+    #[test]
+    fn logged_snapshot_uses_velocity_magnitude() {
+        let snapshot = logged_flow_snapshot(12.0, [3.0, 4.0, 0.0]);
+
+        assert_eq!(snapshot.time, 12.0);
+        assert_eq!(snapshot.velocity_magnitude.mean, 5.0);
+        assert_eq!(snapshot.sample_count, 1);
+        assert_eq!(snapshot.source, "solver-log");
     }
 }

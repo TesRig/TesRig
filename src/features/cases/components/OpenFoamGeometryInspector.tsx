@@ -231,6 +231,9 @@ export function OpenFoamGeometryInspector({
     BOUNDARY_COLORS[
       setup.flowDomain === "Internal" ? "Wall" : (geometryBoundaries[0]?.boundaryType ?? "Wall")
     ];
+  const selectedInletVelocity = [...domainBoundaries, ...geometryBoundaries].find(
+    ({ boundaryType, surface }) => boundaryType === "Inlet" && surface === selectedSurface,
+  )?.velocity;
 
   if (!geometry || !output) {
     return (
@@ -262,6 +265,7 @@ export function OpenFoamGeometryInspector({
       surfaceColors={surfaceColors}
       defaultSurfaceColor={defaultSurfaceColor}
       showFlowDirection
+      selectedInletVelocity={selectedInletVelocity}
     >
       <aside className="openfoam-geometry-inspector" aria-label="OpenFOAM calculation inputs">
         <header>

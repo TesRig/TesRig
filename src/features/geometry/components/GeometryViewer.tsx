@@ -8,6 +8,7 @@ import type { GeometryAsset, UpAxis } from "../../projects/project.types";
 import { BoundaryBoxControlsProvider } from "../boundary-box-controls";
 import { getGeometryData } from "../geometry.api";
 import { createGeometryModel } from "../geometry-model";
+import { disposeInletArrowField, updateInletArrowField } from "../inlet-arrow-field";
 
 interface GeometryViewerProps {
   projectId: string;
@@ -25,6 +26,7 @@ interface GeometryViewerProps {
   surfaceColors?: Readonly<Record<string, number>>;
   defaultSurfaceColor?: number;
   showFlowDirection?: boolean;
+  selectedInletVelocity?: [number, number, number] | null;
   onBoundaryBoxChange?: (boundaryBox: BoundaryBox) => void;
   leftPanel?: ReactNode;
   children?: ReactNode;
@@ -233,6 +235,7 @@ export function GeometryViewer({
   surfaceColors,
   defaultSurfaceColor,
   showFlowDirection = false,
+  selectedInletVelocity,
   onBoundaryBoxChange,
   leftPanel,
   children,
@@ -249,6 +252,8 @@ export function GeometryViewer({
   boundaryBoxValueRef.current = boundaryBox;
   const flowDirectionRef = useRef(flowDirection);
   flowDirectionRef.current = flowDirection;
+  const selectedInletVelocityRef = useRef(selectedInletVelocity);
+  selectedInletVelocityRef.current = selectedInletVelocity;
   const onBoundaryBoxChangeRef = useRef(onBoundaryBoxChange);
   onBoundaryBoxChangeRef.current = onBoundaryBoxChange;
   const [message, setMessage] = useState("Loading geometry…");
@@ -304,9 +309,11 @@ export function GeometryViewer({
     let pointerStart: { x: number; y: number } | null = null;
     let rawModelBounds: THREE.Box3 | null = null;
     let positionedGeometryBounds: THREE.Box3 | null = null;
+    let loadedModel: THREE.Object3D | null = null;
     const modelOffset = new THREE.Vector3();
     let geometrySphere: THREE.Sphere | null = null;
     let domainSphere: THREE.Sphere | null = null;
+    let flowArrowBounds: THREE.Box3 | null = null;
     const boundaryGroup = new THREE.Group();
     boundaryGroup.visible = false;
     scene.add(boundaryGroup);
@@ -321,7 +328,8 @@ export function GeometryViewer({
     flowArrow.visible = false;
     scene.add(flowArrow);
     const updateFlowArrow = (bounds: THREE.Box3 | null) => {
-      if (!showFlowDirection || !bounds || bounds.isEmpty()) {
+      flowArrowBounds = bounds;
+      if (!showFlowDirection || selectedInletVelocityRef.current || !bounds || bounds.isEmpty()) {
         flowArrow.visible = false;
         return;
       }
@@ -363,6 +371,20 @@ export function GeometryViewer({
       boundaryGroup.add(mesh);
       return mesh;
     });
+    const inletArrowGroup = new THREE.Group();
+    inletArrowGroup.name = "Selected inlet velocity";
+    inletArrowGroup.visible = false;
+    scene.add(inletArrowGroup);
+    const updateInletArrows = (surface: string | null) => {
+      updateFlowArrow(flowArrowBounds);
+      updateInletArrowField({
+        group: inletArrowGroup,
+        model: loadedModel,
+        domainGroup: boundaryGroup,
+        surface,
+        velocity: selectedInletVelocityRef.current,
+      });
+    };
     const applySurfaceSelection = (surface: string | null) => {
       scene.traverse((object) => {
         if (!(object instanceof THREE.Mesh)) return;
@@ -392,6 +414,7 @@ export function GeometryViewer({
           }
         });
       });
+      updateInletArrows(surface);
     };
     selectSurfaceRef.current = applySurfaceSelection;
     let updateBoundaryBoxVisual: (box: BoundaryBox | null) => void = () => undefined;
@@ -761,6 +784,7 @@ export function GeometryViewer({
       })
       .then((model) => {
         if (disposed || !model) return;
+        loadedModel = model;
         const bounds = new THREE.Box3().setFromObject(model);
         if (bounds.isEmpty()) throw new Error("The geometry file contains no visible surfaces.");
         rawModelBounds = bounds.clone();
@@ -840,6 +864,7 @@ export function GeometryViewer({
       updateBoundaryBoxRef.current = () => undefined;
       createSetupBoxRef.current = () => undefined;
       optimizeBoxRef.current = () => undefined;
+      disposeInletArrowField(inletArrowGroup);
       renderer.dispose();
       groundGrid.geometry.dispose();
       const gridMaterials = Array.isArray(groundGrid.material)
@@ -871,7 +896,10 @@ export function GeometryViewer({
     upAxis,
   ]);
 
-  useEffect(() => selectSurfaceRef.current(selectedSurface ?? null), [selectedSurface]);
+  useEffect(
+    () => selectSurfaceRef.current(selectedSurface ?? null),
+    [selectedInletVelocity, selectedSurface],
+  );
   useEffect(() => {
     updateBoundaryBoxRef.current(boundaryBox ?? null);
     if (!boundaryBox) setEditingBoundaryBox(false);

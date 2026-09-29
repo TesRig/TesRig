@@ -5,6 +5,7 @@ import { ViewHelper } from "three/examples/jsm/helpers/ViewHelper.js";
 import { toUserMessage } from "../../../lib/errors/app-error";
 import { getGeometryData } from "../../geometry/geometry.api";
 import { createGeometryModel } from "../../geometry/geometry-model";
+import { disposeInletArrowField, updateInletArrowField } from "../../geometry/inlet-arrow-field";
 import type { GeometryAsset, UpAxis } from "../../projects/project.types";
 import type { CfdSetup, FlowSnapshot } from "../case.types";
 import { listFlowVisualizationExtensions } from "../flow-extension-api";
@@ -63,6 +64,7 @@ interface SceneState {
   displayDomain: THREE.Box3;
   flowGroup: THREE.Group;
   domainGroup: THREE.Group;
+  inletArrowGroup: THREE.Group;
   sliceGroup: THREE.Group;
   renderer: THREE.WebGLRenderer;
   camera: THREE.PerspectiveCamera;
@@ -110,7 +112,12 @@ const PROBE_OPTIONS = listFlowVisualizationExtensions().filter(
     ["domain", "line", "point", "connections", "surface", "slice"].includes(extension.id),
 );
 
-function connectionDirection(setup: CfdSetup) {
+function connectionDirection(setup: CfdSetup, snapshot: FlowSnapshot | null = null) {
+  const velocity = snapshot?.velocityMean ?? setup.initialConditions.velocity;
+  if (velocity.every(Number.isFinite)) {
+    const direction = new THREE.Vector3(...velocity);
+    if (direction.lengthSq() > 1e-12) return direction.normalize();
+  }
   return new THREE.Vector3(...resolveFlowDirection(setup));
 }
 
@@ -546,7 +553,7 @@ function rebuildFlow(
   disposeGroup(state.flowGroup);
   disposeGroup(state.sliceGroup);
   state.particleSets.length = 0;
-  const sourceDirection = connectionDirection(setup);
+  const sourceDirection = connectionDirection(setup, snapshot);
   const modelCenter = state.modelBounds.getCenter(new THREE.Vector3());
   const modelSize = state.modelBounds.getSize(new THREE.Vector3());
   const characteristic = Math.max(modelSize.x, modelSize.y, modelSize.z, 1e-6);
@@ -599,6 +606,10 @@ function rebuildFlow(
       );
       const pathSize = pathBounds.getSize(new THREE.Vector3());
       const pathLength = pathSize.getComponent(flowAxis);
+      const minimumCrossExtent = Math.max(
+        Math.min(...crossAxes.map((axis) => modelSize.getComponent(axis))),
+        characteristic * 0.01,
+      );
       const physicalFlowSign = sourceDirection.getComponent(flowAxis) >= 0 ? 1 : -1;
       const physicalInletCoordinate =
         physicalFlowSign > 0
@@ -661,12 +672,16 @@ function rebuildFlow(
           const influence = Math.exp(-Math.pow(along / (flowExtent * 1.15), 2)) * bendProgress;
           crossAxes.forEach((axis, crossIndex) => {
             const halfExtent = Math.max(modelSize.getComponent(axis) * 0.56, characteristic * 0.08);
+            const clearanceWeight = Math.min(
+              1,
+              Math.pow(minimumCrossExtent / Math.max(modelSize.getComponent(axis), 1e-9), 2),
+            );
             const relative =
               (seed.getComponent(axis) - modelCenter.getComponent(axis)) / halfExtent;
             const proximity = Math.exp(-relative * relative * 1.4);
             const side =
               Math.abs(relative) > 0.06 ? Math.sign(relative) : (index + crossIndex) % 2 ? 1 : -1;
-            const displacement = side * halfExtent * 0.5 * influence * proximity;
+            const displacement = side * halfExtent * 0.5 * influence * proximity * clearanceWeight;
             point.setComponent(axis, point.getComponent(axis) + displacement);
           });
           if (along * flowSign > 0) {
@@ -800,7 +815,7 @@ export function FlowResultsViewer({
   const snapshotRef = useRef(snapshot);
   const flowDirectionRef = useRef(new THREE.Vector3(1, 0, 0));
   const settings = probes.find(({ id }) => id === activeProbeId) ?? probes[0];
-  const flowDirection = useMemo(() => connectionDirection(setup), [setup]);
+  const flowDirection = useMemo(() => connectionDirection(setup, snapshot), [setup, snapshot]);
   probesRef.current = probes;
   setupRef.current = setup;
   activeProbeIdRef.current = activeProbeId;
@@ -856,9 +871,12 @@ export function FlowResultsViewer({
     viewHelper.setLabels("X", "Y", "Z");
     const flowGroup = new THREE.Group();
     const domainGroup = new THREE.Group();
+    const inletArrowGroup = new THREE.Group();
     const sliceGroup = new THREE.Group();
     domainGroup.visible = false;
-    scene.add(domainGroup, sliceGroup, flowGroup);
+    inletArrowGroup.name = "Selected inlet velocity";
+    inletArrowGroup.visible = false;
+    scene.add(domainGroup, sliceGroup, flowGroup, inletArrowGroup);
     scene.add(new THREE.AmbientLight(0xffffff, 1.2));
     scene.add(new THREE.HemisphereLight(0xdff3ff, 0x35424a, 3));
     const light = new THREE.DirectionalLight(0xffffff, 4);
@@ -946,7 +964,7 @@ export function FlowResultsViewer({
       let faceAxis: number | null = null;
       let faceCoordinate: number | null = null;
       if (handle === "lineStart" || handle === "lineEnd") {
-        const direction = connectionDirection(setupRef.current);
+        const direction = connectionDirection(setupRef.current, snapshotRef.current);
         const flowAxis = direction
           .toArray()
           .map(Math.abs)
@@ -1032,7 +1050,7 @@ export function FlowResultsViewer({
           if (drag.faceAxis !== null && drag.faceCoordinate !== null) {
             point.setComponent(drag.faceAxis, drag.faceCoordinate);
           }
-          const direction = connectionDirection(setupRef.current);
+          const direction = connectionDirection(setupRef.current, snapshotRef.current);
           const flowAxis = direction
             .toArray()
             .map(Math.abs)
@@ -1141,6 +1159,7 @@ export function FlowResultsViewer({
           displayDomain,
           flowGroup,
           domainGroup,
+          inletArrowGroup,
           sliceGroup,
           renderer,
           camera,
@@ -1177,6 +1196,17 @@ export function FlowResultsViewer({
         );
         setSurfacePressure(model, showPressureRef.current, flowDirectionRef.current);
         setSurfaceSelection(model, selectedSurfaceRef.current);
+        const selectedInlet = setupRef.current.boundaries.find(
+          ({ boundaryType, surface }) =>
+            boundaryType === "Inlet" && surface === selectedSurfaceRef.current,
+        );
+        updateInletArrowField({
+          group: inletArrowGroup,
+          model,
+          domainGroup,
+          surface: selectedSurfaceRef.current,
+          velocity: selectedInlet?.velocity,
+        });
         setMessage("");
       })
       .catch((error: unknown) => setMessage(toUserMessage(error)));
@@ -1195,6 +1225,7 @@ export function FlowResultsViewer({
       viewHelper.dispose();
       disposeGroup(flowGroup);
       disposeGroup(domainGroup);
+      disposeInletArrowField(inletArrowGroup);
       disposeGroup(sliceGroup);
       scene.traverse((object) => {
         if (object instanceof THREE.Mesh || object instanceof THREE.Line) {
@@ -1214,7 +1245,19 @@ export function FlowResultsViewer({
 
   useEffect(() => {
     const state = sceneRef.current;
-    if (state) rebuildFlow(state, probes, activeProbeId, snapshot, setup, selectedSurface);
+    if (state) {
+      rebuildFlow(state, probes, activeProbeId, snapshot, setup, selectedSurface);
+      const selectedInlet = setup.boundaries.find(
+        ({ boundaryType, surface }) => boundaryType === "Inlet" && surface === selectedSurface,
+      );
+      updateInletArrowField({
+        group: state.inletArrowGroup,
+        model: state.model,
+        domainGroup: state.domainGroup,
+        surface: selectedSurface,
+        velocity: selectedInlet?.velocity,
+      });
+    }
   }, [activeProbeId, probes, selectedSurface, setup, snapshot]);
 
   useEffect(() => {

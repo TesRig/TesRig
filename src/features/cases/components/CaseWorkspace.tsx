@@ -388,6 +388,12 @@ export function CaseWorkspace({
             onUpAxisChange={onUpAxisChange}
             boundaryBox={setup.flowDomain === "Internal" ? null : setup.boundaryBox}
             flowDirection={resolveFlowDirection(setup)}
+            selectedInletVelocity={
+              setup.boundaries.find(
+                ({ boundaryType, surface }) =>
+                  boundaryType === "Inlet" && surface === selectedSurface,
+              )?.velocity ?? null
+            }
             leftPanel={processingScriptsPanel}
             onBoundaryBoxChange={(boundaryBox) =>
               setSetup((current) => ({ ...current, boundaryBox }))
