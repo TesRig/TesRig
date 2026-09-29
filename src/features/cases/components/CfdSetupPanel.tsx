@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Button } from "../../../components/common/Button";
+import { useBoundaryBoxControls } from "../../geometry/boundary-box-controls";
 import type { GeometryAsset } from "../../projects/project.types";
 import type {
   BoundaryCondition,
@@ -11,6 +12,7 @@ import type {
   SimulationCase,
 } from "../case.types";
 import { createBackgroundMeshPlan, formatCellCount } from "../mesh-planning";
+import { resolveFlowDirection } from "../flow-direction";
 import { SimulationOutputChart } from "./SimulationOutputChart";
 
 interface CfdSetupPanelProps {
@@ -38,6 +40,7 @@ interface CfdSetupPanelProps {
 }
 
 type Section = "case" | "flow" | "boundaries" | "mesh" | "run";
+type BoundaryStep = "analysis" | "domain" | "conditions" | "optimize";
 
 const boundaryTypes: BoundaryType[] = ["Wall", "Inlet", "Outlet", "Symmetry", "Slip"];
 const boundaryBoxFaceLabels: Record<string, string> = {
@@ -55,13 +58,13 @@ function patchName(surface: string) {
   return /^\d/.test(result) ? `_${result}` : result || "geometry";
 }
 
-function defaultBoundaryType(surface: string, velocity: [number, number, number]): BoundaryType {
-  const flowAxis = velocity.reduce(
-    (largest, value, axis) => (Math.abs(value) > Math.abs(velocity[largest]) ? axis : largest),
+function defaultBoundaryType(surface: string, direction: [number, number, number]): BoundaryType {
+  const flowAxis = direction.reduce(
+    (largest, value, axis) => (Math.abs(value) > Math.abs(direction[largest]) ? axis : largest),
     0,
   );
   const axisName = ["x", "y", "z"][flowAxis];
-  const positiveFlow = velocity[flowAxis] >= 0;
+  const positiveFlow = direction[flowAxis] >= 0;
   if (surface === `domain:${axisName}${positiveFlow ? "Min" : "Max"}`) return "Inlet";
   if (surface === `domain:${axisName}${positiveFlow ? "Max" : "Min"}`) return "Outlet";
   if (surface.startsWith("domain:")) return "Slip";
@@ -98,6 +101,48 @@ function NumericInput({
   );
 }
 
+function BoundaryStepSection({
+  number,
+  title,
+  description,
+  complete,
+  locked = false,
+  open,
+  onToggle,
+  children,
+}: {
+  number: number;
+  title: string;
+  description: string;
+  complete: boolean;
+  locked?: boolean;
+  open: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <section
+      className={`boundary-step ${complete ? "is-complete" : ""} ${locked ? "is-locked" : ""}`}
+    >
+      <button
+        className="boundary-step__header"
+        type="button"
+        onClick={onToggle}
+        disabled={locked}
+        aria-expanded={open}
+      >
+        <span className="boundary-step__number">{complete ? "✓" : number}</span>
+        <span className="boundary-step__heading">
+          <strong>{title}</strong>
+          <small>{locked ? "Complete the previous step first" : description}</small>
+        </span>
+        <span className={`boundary-step__chevron ${open ? "is-open" : ""}`} aria-hidden="true" />
+      </button>
+      {open && !locked && <div className="boundary-step__content">{children}</div>}
+    </section>
+  );
+}
+
 export function CfdSetupPanel({
   setup,
   selectedSurface,
@@ -125,6 +170,12 @@ export function CfdSetupPanel({
   const [chartCollapsed, setChartCollapsed] = useState(false);
   const [section, setSection] = useState<Section>("case");
   const [activePatch, setActivePatch] = useState<string | null>(null);
+  const [openBoundarySteps, setOpenBoundarySteps] = useState<Set<BoundaryStep>>(
+    () => new Set(["analysis"]),
+  );
+  const boundaryBoxControls = useBoundaryBoxControls();
+  const flowDomain = setup.flowDomain ?? "External";
+  const isExternal = flowDomain === "External";
   const selectedBoundary = useMemo(
     () => setup.boundaries.find(({ surface }) => surface === activePatch) ?? null,
     [activePatch, setup.boundaries],
@@ -133,6 +184,19 @@ export function CfdSetupPanel({
     ? setup.boundaries.find(({ surface }) => surface === selectedSurface)
     : null;
   const selectedSurfacePatch = selectedSurfaceBoundary?.surface ?? null;
+  const boundarySurfaceAllowed = Boolean(
+    selectedSurface &&
+    (isExternal ? selectedSurface.startsWith("domain:") : !selectedSurface.startsWith("domain:")),
+  );
+  const relevantBoundaries = setup.boundaries.filter(({ surface }) =>
+    isExternal ? surface.startsWith("domain:") : !surface.startsWith("domain:"),
+  );
+  const domainReady = isExternal
+    ? Boolean(setup.boundaryBox)
+    : Boolean(geometry && boundaryBoxControls?.geometryReady);
+  const conditionsComplete =
+    relevantBoundaries.some(({ boundaryType }) => boundaryType === "Inlet") &&
+    relevantBoundaries.some(({ boundaryType }) => boundaryType === "Outlet");
   const backgroundMeshPlan = useMemo(
     () =>
       setup.boundaryBox
@@ -152,8 +216,31 @@ export function CfdSetupPanel({
   }, [jobId]);
 
   useEffect(() => {
-    if (selectedSurfacePatch) setActivePatch(selectedSurfacePatch);
-  }, [selectedSurfacePatch]);
+    if (!selectedSurface) setActivePatch(null);
+    else if (selectedSurfacePatch) setActivePatch(selectedSurfacePatch);
+  }, [selectedSurface, selectedSurfacePatch]);
+
+  useEffect(() => {
+    if (
+      section === "boundaries" &&
+      geometry &&
+      boundaryBoxControls?.geometryReady &&
+      !setup.boundaryBox
+    ) {
+      boundaryBoxControls.createSetupBox();
+    }
+  }, [boundaryBoxControls, geometry, section, setup.boundaryBox]);
+
+  useEffect(() => {
+    if (!isExternal && boundaryBoxControls?.isEditing) {
+      boundaryBoxControls.setEditing(false);
+    }
+  }, [boundaryBoxControls, isExternal]);
+
+  useEffect(() => {
+    if (!conditionsComplete) return;
+    setOpenBoundarySteps((current) => new Set([...current, "optimize"]));
+  }, [conditionsComplete]);
 
   function changeFluid(key: keyof CfdSetup["fluid"], value: number) {
     onChange({ ...setup, fluid: { ...setup.fluid, [key]: value } });
@@ -184,19 +271,64 @@ export function CfdSetupPanel({
   }
 
   function addSelectedBoundary() {
-    if (!selectedSurface || !setup.boundaryBox) return;
+    if (!selectedSurface || !domainReady || !boundarySurfaceAllowed) return;
     const existing = setup.boundaries.find(({ surface }) => surface === selectedSurface);
     if (!existing) {
       const boundary: BoundaryCondition = {
         surface: selectedSurface,
         patchName: patchName(selectedSurface),
-        boundaryType: defaultBoundaryType(selectedSurface, setup.initialConditions.velocity),
+        boundaryType: defaultBoundaryType(selectedSurface, resolveFlowDirection(setup)),
         velocity: setup.initialConditions.velocity,
         gaugePressure: setup.initialConditions.gaugePressure,
       };
       onChange({ ...setup, boundaries: [...setup.boundaries, boundary] });
     }
     setActivePatch(selectedSurface);
+  }
+
+  function toggleBoundaryStep(step: BoundaryStep) {
+    setOpenBoundarySteps((current) => {
+      const next = new Set(current);
+      if (next.has(step)) next.delete(step);
+      else next.add(step);
+      return next;
+    });
+  }
+
+  function advanceBoundaryStep(current: BoundaryStep, next: BoundaryStep) {
+    setOpenBoundarySteps((steps) => {
+      const updated = new Set(steps);
+      updated.delete(current);
+      updated.add(next);
+      return updated;
+    });
+  }
+
+  function changeFlowDomain(nextDomain: CfdSetup["flowDomain"]) {
+    const keepDomainSurfaces = nextDomain === "External";
+    onChange({
+      ...setup,
+      flowDomain: nextDomain,
+      boundaries: setup.boundaries.filter(({ surface }) =>
+        keepDomainSurfaces ? surface.startsWith("domain:") : !surface.startsWith("domain:"),
+      ),
+    });
+    setActivePatch(null);
+    if (boundaryBoxControls?.geometryReady) {
+      boundaryBoxControls.createSetupBox();
+      if (nextDomain === "Internal") boundaryBoxControls.setEditing(false);
+    }
+    advanceBoundaryStep("analysis", "domain");
+  }
+
+  function updateBoundaryBoxLimit(side: "min" | "max", axis: number, value: number) {
+    if (!setup.boundaryBox) return;
+    const next = {
+      min: [...setup.boundaryBox.min] as [number, number, number],
+      max: [...setup.boundaryBox.max] as [number, number, number],
+    };
+    next[side][axis] = value;
+    onChange({ ...setup, boundaryBox: next });
   }
 
   function updateBoundary(change: Partial<BoundaryCondition>) {
@@ -421,131 +553,259 @@ export function CfdSetupPanel({
               )}
 
               {section === "boundaries" && (
-                <div className="cfd-form">
-                  <div className={`boundary-box-required ${setup.boundaryBox ? "is-ready" : ""}`}>
-                    <strong>
-                      {setup.boundaryBox ? "Boundary box ready" : "Boundary box required"}
-                    </strong>
-                    <span>
-                      {setup.boundaryBox
-                        ? "Finish box editing before selecting a translucent domain face. Selection mode will not resize the box."
-                        : "Create a boundary box above before assigning boundary conditions."}
-                    </span>
-                  </div>
-                  <div className="surface-selection">
-                    <span>Selected surface</span>
-                    <strong>
-                      {selectedSurface
-                        ? (boundaryBoxFaceLabels[selectedSurface] ?? selectedSurface)
-                        : "Click a surface in the view"}
-                    </strong>
-                    <Button
-                      variant={selectedSurfaceBoundary ? "secondary" : "primary"}
-                      onClick={addSelectedBoundary}
-                      disabled={!selectedSurface || !setup.boundaryBox}
-                    >
-                      {selectedSurfaceBoundary
-                        ? "Open selected boundary in list"
-                        : "Add selected face to boundary list"}
-                    </Button>
-                  </div>
-                  {setup.boundaries.length > 0 && (
-                    <div className="boundary-list">
-                      {setup.boundaries.map((boundary) => (
-                        <button
-                          key={boundary.surface}
-                          type="button"
-                          className={activePatch === boundary.surface ? "is-active" : ""}
-                          onClick={() => {
-                            setActivePatch(boundary.surface);
-                            onSurfaceSelect(boundary.surface);
-                          }}
-                        >
-                          <span>{boundaryBoxFaceLabels[boundary.surface] ?? boundary.surface}</span>
-                          <small>{boundary.boundaryType}</small>
-                        </button>
-                      ))}
+                <div className="boundary-workflow">
+                  <BoundaryStepSection
+                    number={1}
+                    title="Choose flow domain"
+                    description={isExternal ? "External fluid analysis" : "Internal fluid analysis"}
+                    complete
+                    open={openBoundarySteps.has("analysis")}
+                    onToggle={() => toggleBoundaryStep("analysis")}
+                  >
+                    <div className="flow-domain-options">
+                      <button
+                        type="button"
+                        className={isExternal ? "is-selected" : ""}
+                        onClick={() => changeFlowDomain("External")}
+                      >
+                        <strong>External</strong>
+                        <span>
+                          Create a surrounding fluid volume and assign its faces as inlets, outlets,
+                          or open boundaries.
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className={!isExternal ? "is-selected" : ""}
+                        onClick={() => changeFlowDomain("Internal")}
+                      >
+                        <strong>Internal</strong>
+                        <span>
+                          Use the imported geometry as the fluid passage and assign its own
+                          surfaces.
+                        </span>
+                      </button>
                     </div>
-                  )}
-                  {selectedBoundary && (
-                    <>
-                      <label className="cfd-field">
-                        <span>Patch name</span>
-                        <input
-                          value={selectedBoundary.patchName}
-                          onChange={(event) =>
-                            updateBoundary({ patchName: patchName(event.target.value) })
-                          }
-                        />
-                      </label>
-                      <label className="cfd-field">
-                        <span>Type</span>
-                        <select
-                          value={selectedBoundary.boundaryType}
-                          onChange={(event) =>
-                            updateBoundary({ boundaryType: event.target.value as BoundaryType })
-                          }
+                  </BoundaryStepSection>
+
+                  <BoundaryStepSection
+                    number={2}
+                    title={isExternal ? "Prepare boundary volume" : "Prepare internal surfaces"}
+                    description={
+                      isExternal
+                        ? setup.boundaryBox
+                          ? "Equal-sided setup volume ready"
+                          : "Creating setup volume"
+                        : "Input geometry surfaces will define the flow passage"
+                    }
+                    complete={domainReady}
+                    open={openBoundarySteps.has("domain")}
+                    onToggle={() => toggleBoundaryStep("domain")}
+                  >
+                    {isExternal ? (
+                      <>
+                        <p className="boundary-step__note">
+                          The initial cube is only for selecting boundary faces. Drag its faces in
+                          the viewport or enter exact limits below; optimize it after assigning the
+                          inlet and outlet.
+                        </p>
+                        {!setup.boundaryBox ? (
+                          <Button
+                            variant="primary"
+                            onClick={() => boundaryBoxControls?.createSetupBox()}
+                            disabled={!boundaryBoxControls?.geometryReady}
+                          >
+                            Create setup volume
+                          </Button>
+                        ) : (
+                          <>
+                            <Button
+                              variant={boundaryBoxControls?.isEditing ? "primary" : "secondary"}
+                              onClick={() =>
+                                boundaryBoxControls?.setEditing(!boundaryBoxControls.isEditing)
+                              }
+                            >
+                              {boundaryBoxControls?.isEditing
+                                ? "Finish resizing"
+                                : "Resize in viewport"}
+                            </Button>
+                            <div className="boundary-limits">
+                              {(["min", "max"] as const).map((side) => (
+                                <div key={side} className="cfd-vector">
+                                  {setup.boundaryBox![side].map((value, axis) => (
+                                    <NumericInput
+                                      key={`${side}-${axis}`}
+                                      label={`${side === "min" ? "Min" : "Max"} ${["X", "Y", "Z"][axis]}`}
+                                      value={value}
+                                      onChange={(next) => updateBoundaryBoxLimit(side, axis, next)}
+                                    />
+                                  ))}
+                                </div>
+                              ))}
+                            </div>
+                            <Button
+                              variant="ghost"
+                              onClick={() => advanceBoundaryStep("domain", "conditions")}
+                            >
+                              Continue to boundary conditions
+                            </Button>
+                          </>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <p className="boundary-step__note">
+                          Select faces directly on the imported geometry. The outer background mesh
+                          is treated only as a meshing aid and is not exposed as a flow boundary.
+                        </p>
+                        <Button
+                          variant="ghost"
+                          onClick={() => advanceBoundaryStep("domain", "conditions")}
+                          disabled={!domainReady}
                         >
-                          {boundaryTypes.map((type) => (
-                            <option key={type}>{type}</option>
-                          ))}
-                        </select>
-                      </label>
-                      {selectedBoundary.boundaryType === "Inlet" && (
-                        <div className="cfd-vector">
-                          {selectedBoundary.velocity.map((value, index) => (
-                            <NumericInput
-                              key={index}
-                              label={`U${["x", "y", "z"][index]}`}
-                              value={value}
-                              onChange={(next) => updateBoundaryVelocity(index, next)}
+                          Continue to boundary conditions
+                        </Button>
+                      </>
+                    )}
+                  </BoundaryStepSection>
+
+                  <BoundaryStepSection
+                    number={3}
+                    title="Assign boundary conditions"
+                    description={
+                      conditionsComplete
+                        ? "Inlet and outlet assigned"
+                        : "Add at least one inlet and one outlet"
+                    }
+                    complete={conditionsComplete}
+                    locked={!domainReady}
+                    open={openBoundarySteps.has("conditions")}
+                    onToggle={() => toggleBoundaryStep("conditions")}
+                  >
+                    <div className="surface-selection">
+                      <span>Selected surface</span>
+                      <strong>
+                        {selectedSurface
+                          ? (boundaryBoxFaceLabels[selectedSurface] ?? selectedSurface)
+                          : `Click ${isExternal ? "a boundary-volume face" : "an input-geometry surface"} in the view`}
+                      </strong>
+                      {selectedSurface && !boundarySurfaceAllowed && (
+                        <small>
+                          Select {isExternal ? "a translucent volume face" : "a geometry surface"}
+                          for this analysis type.
+                        </small>
+                      )}
+                      <Button
+                        variant={selectedSurfaceBoundary ? "secondary" : "primary"}
+                        onClick={addSelectedBoundary}
+                        disabled={!boundarySurfaceAllowed || !domainReady}
+                      >
+                        {selectedSurfaceBoundary
+                          ? "Open selected boundary in list"
+                          : "Add selected surface"}
+                      </Button>
+                    </div>
+                    {relevantBoundaries.length > 0 && (
+                      <div className="boundary-list">
+                        {relevantBoundaries.map((boundary) => (
+                          <button
+                            key={boundary.surface}
+                            type="button"
+                            className={activePatch === boundary.surface ? "is-active" : ""}
+                            onClick={() => {
+                              setActivePatch(boundary.surface);
+                              onSurfaceSelect(boundary.surface);
+                            }}
+                          >
+                            <span>
+                              {boundaryBoxFaceLabels[boundary.surface] ?? boundary.surface}
+                            </span>
+                            <small>{boundary.boundaryType}</small>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {selectedBoundary &&
+                      relevantBoundaries.some(
+                        ({ surface }) => surface === selectedBoundary.surface,
+                      ) && (
+                        <div className="boundary-editor">
+                          <label className="cfd-field">
+                            <span>Patch name</span>
+                            <input
+                              value={selectedBoundary.patchName}
+                              onChange={(event) =>
+                                updateBoundary({ patchName: patchName(event.target.value) })
+                              }
                             />
-                          ))}
+                          </label>
+                          <label className="cfd-field">
+                            <span>Type</span>
+                            <select
+                              value={selectedBoundary.boundaryType}
+                              onChange={(event) =>
+                                updateBoundary({ boundaryType: event.target.value as BoundaryType })
+                              }
+                            >
+                              {boundaryTypes.map((type) => (
+                                <option key={type}>{type}</option>
+                              ))}
+                            </select>
+                          </label>
+                          {selectedBoundary.boundaryType === "Inlet" && (
+                            <div className="cfd-vector">
+                              {selectedBoundary.velocity.map((value, index) => (
+                                <NumericInput
+                                  key={index}
+                                  label={`U${["x", "y", "z"][index]}`}
+                                  value={value}
+                                  onChange={(next) => updateBoundaryVelocity(index, next)}
+                                />
+                              ))}
+                            </div>
+                          )}
+                          {selectedBoundary.boundaryType === "Outlet" && (
+                            <NumericInput
+                              label="Gauge pressure (Pa)"
+                              value={selectedBoundary.gaugePressure}
+                              onChange={(value) => updateBoundary({ gaugePressure: value })}
+                            />
+                          )}
+                          <Button variant="ghost" onClick={removeBoundary}>
+                            Remove boundary
+                          </Button>
                         </div>
                       )}
-                      {selectedBoundary.boundaryType === "Outlet" && (
-                        <NumericInput
-                          label="Gauge pressure (Pa)"
-                          value={selectedBoundary.gaugePressure}
-                          onChange={(value) => updateBoundary({ gaugePressure: value })}
-                        />
-                      )}
-                      <Button variant="ghost" onClick={removeBoundary}>
-                        Remove boundary
+                  </BoundaryStepSection>
+
+                  {isExternal && (
+                    <BoundaryStepSection
+                      number={4}
+                      title="Optimize boundary volume"
+                      description="Resize using recommended external-flow clearance"
+                      complete={false}
+                      locked={!conditionsComplete}
+                      open={openBoundarySteps.has("optimize")}
+                      onToggle={() => toggleBoundaryStep("optimize")}
+                    >
+                      <p className="boundary-step__note">
+                        The setup cube will be reshaped using the detected inlet-to-outlet
+                        direction, with additional downstream space for the wake.
+                      </p>
+                      <Button
+                        variant="primary"
+                        onClick={() => boundaryBoxControls?.optimizeBox()}
+                        disabled={!boundaryBoxControls?.geometryReady}
+                      >
+                        Optimize boundary volume
                       </Button>
-                    </>
+                    </BoundaryStepSection>
                   )}
                 </div>
               )}
 
               {section === "mesh" && (
                 <div className="cfd-form">
-                  <div className={`boundary-box-required ${setup.boundaryBox ? "is-ready" : ""}`}>
-                    <strong>
-                      {setup.boundaryBox ? "External flow domain" : "No boundary box"}
-                    </strong>
-                    <span>
-                      {setup.boundaryBox
-                        ? "The box is meshed as the fluid volume outside the solid. Its default spacing follows the dominant flow direction."
-                        : "Create the boundary box in the 3D toolbar to define the fluid domain."}
-                    </span>
-                    {setup.boundaryBox && (
-                      <Button
-                        variant="ghost"
-                        onClick={() =>
-                          onChange({
-                            ...setup,
-                            boundaryBox: null,
-                            boundaries: setup.boundaries.filter(
-                              ({ surface }) => !surface.startsWith("domain:"),
-                            ),
-                          })
-                        }
-                      >
-                        Remove boundary box
-                      </Button>
-                    )}
-                  </div>
                   <NumericInput
                     label="Base cell size (m)"
                     value={setup.mesh.baseCellSize}
@@ -582,23 +842,13 @@ export function CfdSetupPanel({
                       onChange={(value) => changeMesh("boundaryLayers", value)}
                     />
                   </div>
-                  <div className="cfd-form__columns">
-                    <NumericInput
-                      label="Feature angle (°)"
-                      value={setup.mesh.featureAngle}
-                      min={0}
-                      max={180}
-                      onChange={(value) => changeMesh("featureAngle", value)}
-                    />
-                    {!setup.boundaryBox && (
-                      <NumericInput
-                        label="Legacy domain half-size (m)"
-                        value={setup.mesh.domainPadding}
-                        min={0}
-                        onChange={(value) => changeMesh("domainPadding", value)}
-                      />
-                    )}
-                  </div>
+                  <NumericInput
+                    label="Feature angle (°)"
+                    value={setup.mesh.featureAngle}
+                    min={0}
+                    max={180}
+                    onChange={(value) => changeMesh("featureAngle", value)}
+                  />
                   <p className="cfd-panel__note">
                     TesRig generates blockMesh and snappyHexMesh dictionaries. STL and OBJ can be
                     meshed directly; STEP remains packaged for later triangulation.

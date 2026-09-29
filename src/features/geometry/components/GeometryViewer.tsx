@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { ViewHelper } from "three/examples/jsm/helpers/ViewHelper.js";
 import { toUserMessage } from "../../../lib/errors/app-error";
 import type { BoundaryBox } from "../../cases/case.types";
 import type { GeometryAsset, UpAxis } from "../../projects/project.types";
+import { BoundaryBoxControlsProvider } from "../boundary-box-controls";
 import { getGeometryData } from "../geometry.api";
 import { createGeometryModel } from "../geometry-model";
 
@@ -18,7 +19,7 @@ interface GeometryViewerProps {
   upAxis: UpAxis;
   onUpAxisChange: (upAxis: UpAxis) => void;
   boundaryBox?: BoundaryBox | null;
-  flowVelocity?: [number, number, number];
+  flowDirection?: [number, number, number];
   onBoundaryBoxChange?: (boundaryBox: BoundaryBox) => void;
   leftPanel?: ReactNode;
   children?: ReactNode;
@@ -32,19 +33,22 @@ interface ModelTreeNode {
 }
 
 type BoundaryBoxAssessment = {
-  level: "recommended" | "warning" | "error";
+  level: "recommended" | "error";
   message: string;
 };
 
 const boundaryBoxColors = {
   recommended: 0x72cfff,
-  warning: 0xffb454,
   error: 0xff6b6b,
 } as const;
 
-const UPSTREAM_LENGTHS = 3;
+// General-purpose external-aerodynamics starting point, measured from each
+// geometry AABB face: 2 body lengths upstream, 5 downstream and 2 body widths
+// in each cross-flow direction. A domain-independence study may justify other
+// dimensions for a particular geometry and flow regime.
+const UPSTREAM_LENGTHS = 2;
 const DOWNSTREAM_LENGTHS = 5;
-const CROSS_FLOW_LENGTHS = 3;
+const CROSS_FLOW_LENGTHS = 2;
 const MIN_AXIS_REFERENCE_RATIO = 0.05;
 
 const boundaryFaces = [
@@ -58,12 +62,12 @@ const boundaryFaces = [
 
 function createDefaultBoundaryBox(
   bounds: THREE.Box3,
-  velocity: [number, number, number],
+  direction: [number, number, number],
 ): BoundaryBox {
   const size = bounds.getSize(new THREE.Vector3());
   const largestExtent = Math.max(size.x, size.y, size.z, 1e-6);
-  const flowAxis = velocity.reduce(
-    (largest, value, axis) => (Math.abs(value) > Math.abs(velocity[largest]) ? axis : largest),
+  const flowAxis = direction.reduce(
+    (largest, value, axis) => (Math.abs(value) > Math.abs(direction[largest]) ? axis : largest),
     0,
   );
   const min = bounds.min.toArray() as [number, number, number];
@@ -74,7 +78,7 @@ function createDefaultBoundaryBox(
     // used the largest extent for every face, which badly over-sized thin or slender parts.
     const axisExtent = Math.max(size.getComponent(axis), largestExtent * MIN_AXIS_REFERENCE_RATIO);
     if (axis === flowAxis) {
-      const positiveFlow = velocity[axis] >= 0;
+      const positiveFlow = direction[axis] >= 0;
       min[axis] -= axisExtent * (positiveFlow ? UPSTREAM_LENGTHS : DOWNSTREAM_LENGTHS);
       max[axis] += axisExtent * (positiveFlow ? DOWNSTREAM_LENGTHS : UPSTREAM_LENGTHS);
     } else {
@@ -85,12 +89,22 @@ function createDefaultBoundaryBox(
   return { min, max };
 }
 
+function createSetupBoundaryBox(bounds: THREE.Box3): BoundaryBox {
+  const size = bounds.getSize(new THREE.Vector3());
+  const center = bounds.getCenter(new THREE.Vector3());
+  const halfSide = Math.max(size.x, size.y, size.z, 1e-6) * 0.75;
+  return {
+    min: [center.x - halfSide, center.y - halfSide, center.z - halfSide],
+    max: [center.x + halfSide, center.y + halfSide, center.z + halfSide],
+  };
+}
+
 function assessBoundaryBox(
   bounds: THREE.Box3,
   box: BoundaryBox,
-  velocity: [number, number, number],
+  direction: [number, number, number],
 ): BoundaryBoxAssessment {
-  const recommended = createDefaultBoundaryBox(bounds, velocity);
+  const recommended = createDefaultBoundaryBox(bounds, direction);
   const geometryMin = bounds.min.toArray();
   const geometryMax = bounds.max.toArray();
   const tolerance = Math.max(...bounds.getSize(new THREE.Vector3()).toArray(), 1) * 1e-6;
@@ -107,7 +121,6 @@ function assessBoundaryBox(
     };
   }
 
-  let tooTight = false;
   let oversized = false;
   for (let axis = 0; axis < 3; axis += 1) {
     const actualMargins = [geometryMin[axis] - box.min[axis], box.max[axis] - geometryMax[axis]];
@@ -116,28 +129,20 @@ function assessBoundaryBox(
       recommended.max[axis] - geometryMax[axis],
     ];
     for (let side = 0; side < 2; side += 1) {
-      tooTight ||= actualMargins[side] < recommendedMargins[side] * 0.65 - tolerance;
-      oversized ||= actualMargins[side] > recommendedMargins[side] * 1.5 + tolerance;
+      oversized ||= actualMargins[side] > recommendedMargins[side] + tolerance;
     }
   }
 
-  if (tooTight) {
+  if (oversized) {
     return {
       level: "error",
       message:
-        "The boundary box is tighter than the recommended airflow clearance and may affect the result.",
-    };
-  }
-  if (oversized) {
-    return {
-      level: "warning",
-      message:
-        "The boundary box exceeds the recommended airflow region and will increase mesh memory and run time.",
+        "The boundary box exceeds the default external-flow region and will increase mesh memory and run time.",
     };
   }
   return {
     level: "recommended",
-    message: "Boundary box is within the recommended external-flow region.",
+    message: "Boundary box is at or below the default external-flow region.",
   };
 }
 
@@ -217,7 +222,7 @@ export function GeometryViewer({
   upAxis,
   onUpAxisChange,
   boundaryBox,
-  flowVelocity = [1, 0, 0],
+  flowDirection = [1, 0, 0],
   onBoundaryBoxChange,
   leftPanel,
   children,
@@ -226,23 +231,40 @@ export function GeometryViewer({
   const fitViewRef = useRef<() => void>(() => undefined);
   const selectSurfaceRef = useRef<(surface: string | null) => void>(() => undefined);
   const updateBoundaryBoxRef = useRef<(box: BoundaryBox | null) => void>(() => undefined);
-  const createBoundaryBoxRef = useRef<() => void>(() => undefined);
+  const createSetupBoxRef = useRef<() => void>(() => undefined);
+  const optimizeBoxRef = useRef<() => void>(() => undefined);
   const selectedSurfaceValueRef = useRef(selectedSurface);
   selectedSurfaceValueRef.current = selectedSurface;
   const boundaryBoxValueRef = useRef(boundaryBox);
   boundaryBoxValueRef.current = boundaryBox;
-  const flowVelocityRef = useRef(flowVelocity);
-  flowVelocityRef.current = flowVelocity;
+  const flowDirectionRef = useRef(flowDirection);
+  flowDirectionRef.current = flowDirection;
   const onBoundaryBoxChangeRef = useRef(onBoundaryBoxChange);
   onBoundaryBoxChangeRef.current = onBoundaryBoxChange;
   const [message, setMessage] = useState("Loading geometry…");
   const [modelTree, setModelTree] = useState<ModelTreeNode | null>(null);
   const [editingBoundaryBox, setEditingBoundaryBox] = useState(false);
+  const [geometryReady, setGeometryReady] = useState(false);
   const [boundaryBoxAssessment, setBoundaryBoxAssessment] = useState<BoundaryBoxAssessment | null>(
     null,
   );
   const editingBoundaryBoxRef = useRef(editingBoundaryBox);
   editingBoundaryBoxRef.current = editingBoundaryBox;
+  const createSetupBox = useCallback(() => createSetupBoxRef.current(), []);
+  const optimizeBox = useCallback(() => optimizeBoxRef.current(), []);
+  const setBoundaryBoxEditing = useCallback((editing: boolean) => {
+    setEditingBoundaryBox(editing && Boolean(boundaryBoxValueRef.current));
+  }, []);
+  const boundaryBoxControls = useMemo(
+    () => ({
+      geometryReady,
+      isEditing: editingBoundaryBox,
+      createSetupBox,
+      optimizeBox,
+      setEditing: setBoundaryBoxEditing,
+    }),
+    [createSetupBox, editingBoundaryBox, geometryReady, optimizeBox, setBoundaryBoxEditing],
+  );
 
   useEffect(() => {
     const container = containerRef.current;
@@ -250,6 +272,7 @@ export function GeometryViewer({
 
     setMessage(geometry.format === "STEP" ? "Tessellating STEP geometry…" : "Loading geometry…");
     setModelTree(null);
+    setGeometryReady(false);
     let disposed = false;
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x0d1012);
@@ -509,7 +532,7 @@ export function GeometryViewer({
         setBoundaryBoxAssessment(null);
         return;
       }
-      const assessment = assessBoundaryBox(rawModelBounds, box, flowVelocityRef.current);
+      const assessment = assessBoundaryBox(rawModelBounds, box, flowDirectionRef.current);
       const boundaryColor = boundaryBoxColors[assessment.level];
       setBoundaryBoxAssessment(assessment);
       (boundaryWire.material as THREE.LineBasicMaterial).color.setHex(boundaryColor);
@@ -549,14 +572,20 @@ export function GeometryViewer({
       applySurfaceSelection(selectedSurfaceValueRef.current ?? null);
     };
     updateBoundaryBoxRef.current = updateBoundaryBoxVisual;
-    createBoundaryBoxRef.current = () => {
-      if (!rawModelBounds) return;
-      const next = createDefaultBoundaryBox(rawModelBounds, flowVelocityRef.current);
+    const applyBoundaryBox = (next: BoundaryBox, editing: boolean) => {
       boundaryBoxValueRef.current = next;
       updateBoundaryBoxVisual(next);
       onBoundaryBoxChangeRef.current?.(next);
-      setEditingBoundaryBox(true);
+      setEditingBoundaryBox(editing);
       fitView();
+    };
+    createSetupBoxRef.current = () => {
+      if (!rawModelBounds) return;
+      applyBoundaryBox(createSetupBoundaryBox(rawModelBounds), true);
+    };
+    optimizeBoxRef.current = () => {
+      if (!rawModelBounds) return;
+      applyBoundaryBox(createDefaultBoundaryBox(rawModelBounds, flowDirectionRef.current), false);
     };
 
     scene.add(new THREE.AmbientLight(0xffffff, 1.15));
@@ -720,6 +749,7 @@ export function GeometryViewer({
         geometrySphere.radius = Math.max(geometrySphere.radius, extent * 0.01, 0.01);
         updateBoundaryBoxVisual(boundaryBoxValueRef.current ?? null);
         fitView();
+        setGeometryReady(true);
         setMessage("");
       })
       .catch((error: unknown) => setMessage(toUserMessage(error)));
@@ -741,7 +771,8 @@ export function GeometryViewer({
       fitViewRef.current = () => undefined;
       selectSurfaceRef.current = () => undefined;
       updateBoundaryBoxRef.current = () => undefined;
-      createBoundaryBoxRef.current = () => undefined;
+      createSetupBoxRef.current = () => undefined;
+      optimizeBoxRef.current = () => undefined;
       renderer.dispose();
       groundGrid.geometry.dispose();
       const gridMaterials = Array.isArray(groundGrid.material)
@@ -767,7 +798,7 @@ export function GeometryViewer({
   useEffect(() => {
     updateBoundaryBoxRef.current(boundaryBox ?? null);
     if (!boundaryBox) setEditingBoundaryBox(false);
-  }, [boundaryBox, flowVelocity]);
+  }, [boundaryBox, flowDirection]);
 
   function selectUpAxis(nextAxis: UpAxis) {
     if (nextAxis === upAxis) return;
@@ -775,128 +806,96 @@ export function GeometryViewer({
   }
 
   return (
-    <div className="geometry-viewer" ref={containerRef}>
-      <div
-        className={`viewer-left-stack geometry-viewer__left-stack ${leftPanel ? "has-secondary-panel" : ""}`}
-      >
-        <aside className="model-tree" aria-label="Geometry structure">
-          {geometries && geometries.length > 1 ? (
-            <label className="model-tree__geometry-select">
-              <span>Geometry</span>
-              <select
-                value={geometry.id}
-                onChange={(event) => {
-                  setMessage("Loading geometry…");
-                  setModelTree(null);
-                  onGeometryChange?.(event.target.value);
-                }}
-              >
-                {geometries.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          ) : (
-            <div className="model-tree__title">
-              <span>{geometry.name}</span>
-              <small>{geometry.format}</small>
-            </div>
-          )}
-          <div className="model-tree__content">
-            {modelTree ? (
-              <ModelTreeBranch
-                node={modelTree}
-                selectedSurface={selectedSurface}
-                onSurfaceSelect={onSurfaceSelect}
-              />
-            ) : (
-              <span>Reading structure…</span>
-            )}
-          </div>
-        </aside>
-        {leftPanel}
-      </div>
-      {message && <div className="geometry-viewer__message">{message}</div>}
-      {!message && (
-        <div className="geometry-viewer__toolbar">
-          {onBoundaryBoxChange && (
-            <>
-              <button
-                className={`geometry-viewer__fit boundary-box-toggle ${editingBoundaryBox ? "is-active" : ""}`}
-                type="button"
-                onClick={() => {
-                  if (boundaryBox) {
-                    setEditingBoundaryBox((editing) => !editing);
-                  } else {
-                    createBoundaryBoxRef.current();
-                  }
-                }}
-              >
-                {boundaryBox
-                  ? editingBoundaryBox
-                    ? "Finish box"
-                    : "Edit boundary box"
-                  : "Create boundary box"}
-              </button>
-              {boundaryBox && (
-                <button
-                  className="geometry-viewer__fit"
-                  type="button"
-                  onClick={() => createBoundaryBoxRef.current()}
-                >
-                  Reset recommended
-                </button>
-              )}
-            </>
-          )}
-          <div className="up-axis-control" aria-label="Up axis">
-            <span>Up</span>
-            <button
-              className={upAxis === "Y" ? "is-active" : ""}
-              type="button"
-              onClick={() => selectUpAxis("Y")}
-            >
-              Y
-            </button>
-            <button
-              className={upAxis === "Z" ? "is-active" : ""}
-              type="button"
-              onClick={() => selectUpAxis("Z")}
-            >
-              Z
-            </button>
-          </div>
-          <button
-            className="geometry-viewer__fit"
-            type="button"
-            onClick={() => fitViewRef.current()}
-          >
-            Fit view
-          </button>
-        </div>
-      )}
-      {boundaryBoxAssessment && boundaryBoxAssessment.level !== "recommended" && (
+    <BoundaryBoxControlsProvider value={boundaryBoxControls}>
+      <div className="geometry-viewer" ref={containerRef}>
         <div
-          className={`boundary-box-notice is-${boundaryBoxAssessment.level}`}
-          role="status"
-          aria-live="polite"
+          className={`viewer-left-stack geometry-viewer__left-stack ${leftPanel ? "has-secondary-panel" : ""}`}
         >
-          <strong>
-            {boundaryBoxAssessment.level === "warning"
-              ? "Large airflow domain"
-              : "Boundary box needs attention"}
-          </strong>
-          <span>{boundaryBoxAssessment.message}</span>
+          <aside className="model-tree" aria-label="Geometry structure">
+            {geometries && geometries.length > 1 ? (
+              <label className="model-tree__geometry-select">
+                <span>Geometry</span>
+                <select
+                  value={geometry.id}
+                  onChange={(event) => {
+                    setMessage("Loading geometry…");
+                    setModelTree(null);
+                    onGeometryChange?.(event.target.value);
+                  }}
+                >
+                  {geometries.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <div className="model-tree__title">
+                <span>{geometry.name}</span>
+                <small>{geometry.format}</small>
+              </div>
+            )}
+            <div className="model-tree__content">
+              {modelTree ? (
+                <ModelTreeBranch
+                  node={modelTree}
+                  selectedSurface={selectedSurface}
+                  onSurfaceSelect={onSurfaceSelect}
+                />
+              ) : (
+                <span>Reading structure…</span>
+              )}
+            </div>
+          </aside>
+          {leftPanel}
         </div>
-      )}
-      <div className="geometry-viewer__hint">
-        {editingBoundaryBox
-          ? "Drag a translucent face to resize · faces snap to the origin"
-          : "Orbit · left drag   Pan · right drag   Zoom · wheel   Axes · click to snap"}
+        {message && <div className="geometry-viewer__message">{message}</div>}
+        {!message && (
+          <div className="geometry-viewer__toolbar">
+            <div className="up-axis-control" aria-label="Up axis">
+              <span>Up</span>
+              <button
+                className={upAxis === "Y" ? "is-active" : ""}
+                type="button"
+                onClick={() => selectUpAxis("Y")}
+              >
+                Y
+              </button>
+              <button
+                className={upAxis === "Z" ? "is-active" : ""}
+                type="button"
+                onClick={() => selectUpAxis("Z")}
+              >
+                Z
+              </button>
+            </div>
+            <button
+              className="geometry-viewer__fit"
+              type="button"
+              onClick={() => fitViewRef.current()}
+            >
+              Fit view
+            </button>
+          </div>
+        )}
+        {boundaryBoxAssessment && boundaryBoxAssessment.level !== "recommended" && (
+          <div
+            className={`boundary-box-notice is-${boundaryBoxAssessment.level}`}
+            role="status"
+            aria-live="polite"
+          >
+            <strong>Boundary box needs attention</strong>
+            <span>{boundaryBoxAssessment.message}</span>
+          </div>
+        )}
+        <div className="geometry-viewer__hint">
+          {editingBoundaryBox
+            ? "Drag a translucent face to resize · faces snap to the origin"
+            : "Orbit · left drag   Pan · right drag   Zoom · wheel   Axes · click to snap"}
+        </div>
+        {children}
       </div>
-      {children}
-    </div>
+    </BoundaryBoxControlsProvider>
   );
 }

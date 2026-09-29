@@ -8,6 +8,7 @@ import { createGeometryModel } from "../../geometry/geometry-model";
 import type { GeometryAsset, UpAxis } from "../../projects/project.types";
 import type { CfdSetup, FlowSnapshot } from "../case.types";
 import { listFlowVisualizationExtensions } from "../flow-extension-api";
+import { resolveFlowDirection } from "../flow-direction";
 
 type ProbeKind = "domain" | "line" | "point" | "connections" | "surface" | "slice";
 type SliceField = "pressure" | "velocity";
@@ -109,41 +110,8 @@ const PROBE_OPTIONS = listFlowVisualizationExtensions().filter(
     ["domain", "line", "point", "connections", "surface", "slice"].includes(extension.id),
 );
 
-function cardinalDirection(velocity: THREE.Vector3) {
-  const components = velocity.toArray().map(Math.abs);
-  const axis = components.indexOf(Math.max(...components));
-  const direction = new THREE.Vector3();
-  direction.setComponent(axis, velocity.getComponent(axis) < 0 ? -1 : 1);
-  return direction;
-}
-
-interface DomainFace {
-  axis: 0 | 1 | 2;
-  side: "min" | "max";
-}
-
-function parseDomainFace(surface: string): DomainFace | null {
-  const match = surface.match(/^domain:([xyz])(Min|Max)$/);
-  if (!match) return null;
-  return {
-    axis: { x: 0, y: 1, z: 2 }[match[1] as "x" | "y" | "z"] as 0 | 1 | 2,
-    side: match[2] === "Min" ? "min" : "max",
-  };
-}
-
-function inletFace(setup: CfdSetup): DomainFace | null {
-  const inlet = setup.boundaries.find(
-    ({ boundaryType, surface }) => boundaryType === "Inlet" && surface.startsWith("domain:"),
-  );
-  return inlet ? parseDomainFace(inlet.surface) : null;
-}
-
 function connectionDirection(setup: CfdSetup) {
-  const inlet = inletFace(setup);
-  if (!inlet) return cardinalDirection(new THREE.Vector3(...setup.initialConditions.velocity));
-  const direction = new THREE.Vector3();
-  direction.setComponent(inlet.axis, inlet.side === "min" ? 1 : -1);
-  return direction;
+  return new THREE.Vector3(...resolveFlowDirection(setup));
 }
 
 function normalizedPoint(point: [number, number, number], bounds: THREE.Box3) {
@@ -1162,8 +1130,10 @@ export function FlowResultsViewer({
           new THREE.Vector3(...box.min).add(offset),
           new THREE.Vector3(...box.max).add(offset),
         );
-        addDomainBox(domainGroup, displayDomain);
-        setDomainSelection(domainGroup, selectedSurfaceRef.current);
+        if (setupRef.current.flowDomain !== "Internal") {
+          addDomainBox(domainGroup, displayDomain);
+          setDomainSelection(domainGroup, selectedSurfaceRef.current);
+        }
         const state: SceneState = {
           scene,
           model,
@@ -1266,12 +1236,13 @@ export function FlowResultsViewer({
   const velocity = snapshot?.velocityMagnitude.mean ?? flowDirection.length();
   const pressure = snapshot?.pressure ? snapshot.pressure.mean * setup.fluid.density : undefined;
   const densityUnit = settings.kind === "point" ? "m³" : settings.kind === "line" ? "m" : "m²";
-  const metricBounds = setup.boundaryBox
-    ? new THREE.Box3(
-        new THREE.Vector3(...setup.boundaryBox.min),
-        new THREE.Vector3(...setup.boundaryBox.max),
-      )
-    : null;
+  const metricBounds =
+    setup.flowDomain !== "Internal" && setup.boundaryBox
+      ? new THREE.Box3(
+          new THREE.Vector3(...setup.boundaryBox.min),
+          new THREE.Vector3(...setup.boundaryBox.max),
+        )
+      : null;
   const metricFlowAxis = flowDirection
     .toArray()
     .map(Math.abs)

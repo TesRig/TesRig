@@ -2,6 +2,7 @@ export type SimulationType = "CFD";
 export type Solver = "OpenFOAM";
 export type CaseStatus = "Draft" | "Ready";
 export type FlowRegime = "Steady" | "Transient";
+export type FlowDomain = "External" | "Internal";
 export type TurbulenceModel = "Laminar" | "kOmegaSST" | "SpalartAllmaras";
 export type BoundaryType = "Wall" | "Inlet" | "Outlet" | "Symmetry" | "Slip";
 
@@ -19,6 +20,7 @@ export interface BoundaryBox {
 }
 
 export interface CfdSetup {
+  flowDomain: FlowDomain;
   flowRegime: FlowRegime;
   turbulenceModel: TurbulenceModel;
   fluid: {

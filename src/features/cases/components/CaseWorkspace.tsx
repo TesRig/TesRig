@@ -7,6 +7,7 @@ import { assignGeometry, chooseGeometryFile, importGeometry } from "../../geomet
 import { ensureGeometryTriangulated } from "../../geometry/step-geometry";
 import type { UpAxis } from "../../projects/project.types";
 import type { SimulationCase } from "../case.types";
+import { resolveFlowDirection } from "../flow-direction";
 import {
   chooseCaseExportDirectory,
   cancelSimulation,
@@ -72,6 +73,13 @@ export function CaseWorkspace({
   useEffect(() => setSelection(simulationCase.geometryId ?? ""), [simulationCase.geometryId]);
   useEffect(() => setSelectedSurface(null), [simulationCase.geometryId]);
   useEffect(() => setSetup(simulationCase.cfdSetup), [simulationCase.cfdSetup]);
+  useEffect(() => {
+    const clearSurfaceSelection = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSelectedSurface(null);
+    };
+    window.addEventListener("keydown", clearSurfaceSelection);
+    return () => window.removeEventListener("keydown", clearSurfaceSelection);
+  }, []);
   useEffect(() => {
     setFlowSnapshot(null);
     setShowFlowView(false);
@@ -367,8 +375,8 @@ export function CaseWorkspace({
             onSurfaceSelect={selectSurface}
             upAxis={project!.settings.upAxis}
             onUpAxisChange={onUpAxisChange}
-            boundaryBox={setup.boundaryBox}
-            flowVelocity={setup.initialConditions.velocity}
+            boundaryBox={setup.flowDomain === "Internal" ? null : setup.boundaryBox}
+            flowDirection={resolveFlowDirection(setup)}
             leftPanel={processingScriptsPanel}
             onBoundaryBoxChange={(boundaryBox) =>
               setSetup((current) => ({ ...current, boundaryBox }))

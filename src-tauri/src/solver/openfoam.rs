@@ -1,4 +1,6 @@
-use crate::domain::case::{BoundaryType, CfdSetup, FlowRegime, SimulationCase, TurbulenceModel};
+use crate::domain::case::{
+    BoundaryType, CfdSetup, FlowDomain, FlowRegime, SimulationCase, TurbulenceModel,
+};
 use crate::domain::geometry::GeometryAsset;
 use crate::error::{AppError, AppResult};
 use serde::Serialize;
@@ -71,7 +73,8 @@ impl OpenFoamAdapter {
         }
         let mut patch_names = HashSet::new();
         for boundary in &setup.boundaries {
-            if is_domain_surface(&boundary.surface)
+            let domain_surface = is_domain_surface(&boundary.surface);
+            if domain_surface
                 && (setup.boundary_box.is_none()
                     || !domain_face_defaults()
                         .into_iter()
@@ -79,6 +82,12 @@ impl OpenFoamAdapter {
             {
                 return Err(AppError::InvalidCaseSetup(
                     "Boundary-box conditions require a valid boundary box face.".to_owned(),
+                ));
+            }
+            if setup.flow_domain == FlowDomain::Internal && domain_surface {
+                return Err(AppError::InvalidCaseSetup(
+                    "Internal flow boundary conditions must use surfaces from the input geometry."
+                        .to_owned(),
                 ));
             }
             if boundary.surface.trim().is_empty() || sanitize_word(&boundary.patch_name).is_empty()
@@ -100,19 +109,35 @@ impl OpenFoamAdapter {
                 ));
             }
         }
-        for (surface, default_name, _) in domain_face_defaults() {
-            if setup
+        if setup.flow_domain == FlowDomain::External {
+            for (surface, default_name, _) in domain_face_defaults() {
+                if setup
+                    .boundaries
+                    .iter()
+                    .any(|boundary| boundary.surface == surface)
+                {
+                    continue;
+                }
+                if !patch_names.insert(default_name.to_owned()) {
+                    return Err(AppError::InvalidCaseSetup(
+                        "Boundary patch names must be unique.".to_owned(),
+                    ));
+                }
+            }
+        }
+        if setup.flow_domain == FlowDomain::Internal
+            && (!setup
                 .boundaries
                 .iter()
-                .any(|boundary| boundary.surface == surface)
-            {
-                continue;
-            }
-            if !patch_names.insert(default_name.to_owned()) {
-                return Err(AppError::InvalidCaseSetup(
-                    "Boundary patch names must be unique.".to_owned(),
-                ));
-            }
+                .any(|boundary| boundary.boundary_type == BoundaryType::Inlet)
+                || !setup
+                    .boundaries
+                    .iter()
+                    .any(|boundary| boundary.boundary_type == BoundaryType::Outlet))
+        {
+            return Err(AppError::InvalidCaseSetup(
+                "Flow analysis requires at least one inlet and one outlet boundary.".to_owned(),
+            ));
         }
         Ok(())
     }
@@ -285,7 +310,9 @@ impl OpenFoamAdapter {
                     .to_owned(),
             );
         }
-        if simulation_case.cfd_setup.boundary_box.is_none() {
+        if simulation_case.cfd_setup.flow_domain == FlowDomain::External
+            && simulation_case.cfd_setup.boundary_box.is_none()
+        {
             warnings.push(
                 "Create a boundary box to control the external flow domain and its faces."
                     .to_owned(),
@@ -547,16 +574,22 @@ fn snappy_dict(geometry_name: &str, setup: &CfdSetup) -> String {
         .boundary_box
         .as_ref()
         .map(|domain| {
-            [0, 1, 2].map(|axis| domain.min[axis] + (domain.max[axis] - domain.min[axis]) * 0.9)
+            let fraction = if setup.flow_domain == FlowDomain::Internal {
+                0.5
+            } else {
+                0.9
+            };
+            [0, 1, 2]
+                .map(|axis| domain.min[axis] + (domain.max[axis] - domain.min[axis]) * fraction)
         })
-        .unwrap_or([setup.mesh.domain_padding * 0.85; 3]);
-    let surface_name = setup
-        .boundaries
-        .iter()
-        .find(|boundary| !is_domain_surface(&boundary.surface))
-        .map(|boundary| sanitize_word(&boundary.patch_name))
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "geometry".to_owned());
+        .unwrap_or_else(|| {
+            if setup.flow_domain == FlowDomain::Internal {
+                [0.0; 3]
+            } else {
+                [setup.mesh.domain_padding * 0.85; 3]
+            }
+        });
+    let surface_name = snappy_surface_name(setup);
     let geometry_regions = setup
         .boundaries
         .iter()
@@ -581,12 +614,16 @@ fn snappy_dict(geometry_name: &str, setup: &CfdSetup) -> String {
             )
         })
         .collect::<String>();
-    let default_patch_type = setup
-        .boundaries
-        .iter()
-        .find(|boundary| !is_domain_surface(&boundary.surface))
-        .map(|boundary| mesh_patch_type(boundary.boundary_type))
-        .unwrap_or("wall");
+    let default_patch_type = if setup.flow_domain == FlowDomain::Internal {
+        "wall"
+    } else {
+        setup
+            .boundaries
+            .iter()
+            .find(|boundary| !is_domain_surface(&boundary.surface))
+            .map(|boundary| mesh_patch_type(boundary.boundary_type))
+            .unwrap_or("wall")
+    };
     let layer_patches = if setup
         .boundaries
         .iter()
@@ -620,13 +657,7 @@ fn snappy_dict(geometry_name: &str, setup: &CfdSetup) -> String {
 }
 
 fn snappy_dict_v2606(geometry_name: &str, setup: &CfdSetup) -> String {
-    let surface_name = setup
-        .boundaries
-        .iter()
-        .find(|boundary| !is_domain_surface(&boundary.surface))
-        .map(|boundary| sanitize_word(&boundary.patch_name))
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "geometry".to_owned());
+    let surface_name = snappy_surface_name(setup);
     snappy_dict(geometry_name, setup)
         .replace(
             &format!("geometry\n{{\n    {surface_name}\n"),
@@ -636,6 +667,19 @@ fn snappy_dict_v2606(geometry_name: &str, setup: &CfdSetup) -> String {
             &format!("type triSurface;\n        file \"{geometry_name}\";"),
             &format!("type triSurfaceMesh;\n        name {surface_name};"),
         )
+}
+
+fn snappy_surface_name(setup: &CfdSetup) -> String {
+    if setup.flow_domain == FlowDomain::Internal {
+        return "geometry".to_owned();
+    }
+    setup
+        .boundaries
+        .iter()
+        .find(|boundary| !is_domain_surface(&boundary.surface))
+        .map(|boundary| sanitize_word(&boundary.patch_name))
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "geometry".to_owned())
 }
 
 fn domain_face_defaults() -> [(&'static str, &'static str, BoundaryType); 6] {
@@ -833,10 +877,14 @@ fn turbulence_nu_tilda(setup: &CfdSetup) -> String {
 
 fn scalar_turbulence_field(setup: &CfdSetup, name: &str, dimensions: &str, value: f64) -> String {
     let mut geometry_patches = String::new();
+    let has_default_geometry_patch = setup.boundaries.iter().any(|boundary| {
+        !is_domain_surface(&boundary.surface) && sanitize_word(&boundary.patch_name) == "geometry"
+    });
     if setup
         .boundaries
         .iter()
         .all(|boundary| is_domain_surface(&boundary.surface))
+        || (setup.flow_domain == FlowDomain::Internal && !has_default_geometry_patch)
     {
         let condition = match name {
             "nut" => "type nutkWallFunction; value uniform 0;".to_owned(),
@@ -874,10 +922,14 @@ fn scalar_turbulence_field(setup: &CfdSetup, name: &str, dimensions: &str, value
 
 fn geometry_field_boundaries(setup: &CfdSetup, field: &str) -> String {
     let mut output = String::new();
+    let has_default_geometry_patch = setup.boundaries.iter().any(|boundary| {
+        !is_domain_surface(&boundary.surface) && sanitize_word(&boundary.patch_name) == "geometry"
+    });
     if setup
         .boundaries
         .iter()
         .all(|boundary| is_domain_surface(&boundary.surface))
+        || (setup.flow_domain == FlowDomain::Internal && !has_default_geometry_patch)
     {
         output.push_str(if field == "U" {
             "    geometry { type noSlip; }\n"
@@ -913,6 +965,9 @@ fn geometry_field_boundaries(setup: &CfdSetup, field: &str) -> String {
 }
 
 fn domain_field_boundaries(setup: &CfdSetup, field: &str) -> String {
+    if setup.flow_domain == FlowDomain::Internal {
+        return String::new();
+    }
     domain_face_defaults()
         .into_iter()
         .map(|(surface, default_name, _)| {
@@ -953,6 +1008,9 @@ fn domain_field_boundaries(setup: &CfdSetup, field: &str) -> String {
 }
 
 fn domain_scalar_boundaries(setup: &CfdSetup, field: &str, value: f64) -> String {
+    if setup.flow_domain == FlowDomain::Internal {
+        return String::new();
+    }
     domain_face_defaults()
         .into_iter()
         .map(|(surface, default_name, _)| {
@@ -1162,6 +1220,42 @@ mod tests {
         assert!(!snappy.contains("triSurfaceMesh"));
         assert!(snappy.contains("locationInMesh (5.2 2.6 1.8)"));
         assert!(!snappy.contains("domain:yMin"));
+    }
+
+    #[test]
+    fn internal_flow_uses_geometry_patches_without_background_domain_conditions() {
+        let mut setup = CfdSetup::default();
+        setup.flow_domain = FlowDomain::Internal;
+        setup.boundary_box = Some(crate::domain::case::BoundaryBox {
+            min: [-2.0, -2.0, -2.0],
+            max: [2.0, 2.0, 2.0],
+        });
+        setup.boundaries = vec![
+            crate::domain::case::BoundaryCondition {
+                surface: "inlet face".to_owned(),
+                patch_name: "inlet".to_owned(),
+                boundary_type: BoundaryType::Inlet,
+                velocity: [10.0, 0.0, 0.0],
+                gauge_pressure: 0.0,
+            },
+            crate::domain::case::BoundaryCondition {
+                surface: "outlet face".to_owned(),
+                patch_name: "outlet".to_owned(),
+                boundary_type: BoundaryType::Outlet,
+                velocity: [10.0, 0.0, 0.0],
+                gauge_pressure: 0.0,
+            },
+        ];
+
+        let velocity = velocity_field(&setup);
+        assert!(velocity.contains("inlet { type fixedValue;"));
+        assert!(velocity.contains("outlet { type zeroGradient;"));
+        assert!(velocity.contains("geometry { type noSlip; }"));
+        assert!(!velocity.contains("xMin {"));
+
+        let snappy = snappy_dict("duct.stl", &setup);
+        assert!(snappy.contains("locationInMesh (0 0 0)"));
+        assert!(snappy.contains("patchInfo { type wall; }"));
     }
 
     #[test]

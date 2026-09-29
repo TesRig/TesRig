@@ -27,6 +27,13 @@ pub enum FlowRegime {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum FlowDomain {
+    #[default]
+    External,
+    Internal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum TurbulenceModel {
     Laminar,
     #[default]
@@ -145,6 +152,8 @@ pub struct BoundaryBox {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct CfdSetup {
+    #[serde(default)]
+    pub flow_domain: FlowDomain,
     pub flow_regime: FlowRegime,
     pub turbulence_model: TurbulenceModel,
     pub fluid: FluidProperties,
