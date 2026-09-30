@@ -89,6 +89,7 @@ export function CaseWorkspace({
   const resultsRequestRef = useRef(resultsRequest);
   resultsRequestRef.current = resultsRequest;
   const geometry = project?.geometries.find(({ id }) => id === simulationCase.geometryId);
+  const assignedMaterial = project?.materials.find(({ id }) => id === geometry?.materialId);
   const sourceCase = project?.cases.find(({ id }) => id === simulationCase.variantOfCaseId);
   const jobId = job?.id;
   const jobStatus = job?.status;
@@ -392,6 +393,7 @@ export function CaseWorkspace({
           <FlowResultsViewer
             projectId={project!.id}
             geometry={geometry}
+            defaultMaterialAppearance={assignedMaterial?.appearance}
             setup={setup}
             snapshot={flowSnapshot}
             isPreview={jobStatus !== "Completed"}
@@ -411,6 +413,7 @@ export function CaseWorkspace({
           <GeometryViewer
             projectId={project!.id}
             geometry={geometry}
+            defaultMaterialAppearance={assignedMaterial?.appearance}
             selectedSurface={selectedSurface}
             onSurfaceSelect={selectSurface}
             upAxis={project!.settings.upAxis}

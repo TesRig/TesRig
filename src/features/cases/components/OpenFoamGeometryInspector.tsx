@@ -195,6 +195,7 @@ export function OpenFoamGeometryInspector({
             format: output.format,
             sizeBytes: output.bytes.length,
             createdAt: "",
+            materialId: null,
           }
         : null,
     [caseId, output],

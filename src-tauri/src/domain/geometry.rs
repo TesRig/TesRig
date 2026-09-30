@@ -40,6 +40,8 @@ pub struct GeometryAsset {
     pub format: GeometryFormat,
     pub size_bytes: u64,
     pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub material_id: Option<Uuid>,
 }
 
 impl GeometryAsset {
@@ -51,6 +53,7 @@ impl GeometryAsset {
             format,
             size_bytes,
             created_at: Utc::now(),
+            material_id: None,
         }
     }
 

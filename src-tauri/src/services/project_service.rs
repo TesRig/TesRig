@@ -2,10 +2,12 @@ use super::archive_service::ArchiveService;
 use super::workspace_service::{OpenWorkspace, WorkspaceService};
 use crate::domain::case::{CaseStatus, CfdSetup, SimulationCase, SimulationType, Solver};
 use crate::domain::geometry::{GeometryAsset, GeometryFormat};
+use crate::domain::material::Material;
 use crate::domain::project::{
     CaseReference, ProjectManifest, ProjectSettings, ProjectSummary, PROJECT_FORMAT_VERSION,
 };
 use crate::error::{AppError, AppResult};
+use crate::services::material_io;
 use crate::solver::openfoam::{CaseValidation, OpenFoamAdapter};
 use crate::solver::processing::{
     self, ProcessingResult, ProcessingResultSummary, ProcessingScript, ProcessingScriptRun,
@@ -550,6 +552,137 @@ impl ProjectService {
         Ok(summary)
     }
 
+    pub fn upsert_material(
+        &mut self,
+        project_id: Uuid,
+        mut material: Material,
+    ) -> AppResult<ProjectSummary> {
+        validate_material(&material)?;
+        let workspace = self.workspaces.current_mut()?;
+        ensure_project(workspace, project_id)?;
+        if let Some(parent_id) = material.based_on {
+            if parent_id == material.id
+                || !workspace
+                    .manifest
+                    .materials
+                    .iter()
+                    .any(|item| item.id == parent_id)
+            {
+                return Err(AppError::InvalidMaterial(
+                    "The base material does not exist in this project.".to_owned(),
+                ));
+            }
+        }
+        material.updated_at = Utc::now();
+        if let Some(existing) = workspace
+            .manifest
+            .materials
+            .iter_mut()
+            .find(|item| item.id == material.id)
+        {
+            material.created_at = existing.created_at;
+            *existing = material;
+        } else {
+            material.built_in = false;
+            material.created_at = material.updated_at;
+            workspace.manifest.materials.push(material);
+        }
+        workspace.manifest.updated_at = Utc::now();
+        stage_workspace(workspace)?;
+        self.dirty = true;
+        Ok(summarize(workspace))
+    }
+
+    pub fn delete_material(
+        &mut self,
+        project_id: Uuid,
+        material_id: Uuid,
+    ) -> AppResult<ProjectSummary> {
+        let workspace = self.workspaces.current_mut()?;
+        ensure_project(workspace, project_id)?;
+        ensure_material(workspace, material_id)?;
+        workspace
+            .manifest
+            .materials
+            .retain(|material| material.id != material_id);
+        for geometry in &mut workspace.manifest.geometries {
+            if geometry.material_id == Some(material_id) {
+                geometry.material_id = None;
+            }
+        }
+        for material in &mut workspace.manifest.materials {
+            if material.based_on == Some(material_id) {
+                material.based_on = None;
+            }
+        }
+        workspace.manifest.updated_at = Utc::now();
+        stage_workspace(workspace)?;
+        self.dirty = true;
+        Ok(summarize(workspace))
+    }
+
+    pub fn assign_material(
+        &mut self,
+        project_id: Uuid,
+        geometry_id: Uuid,
+        material_id: Option<Uuid>,
+    ) -> AppResult<ProjectSummary> {
+        let workspace = self.workspaces.current_mut()?;
+        ensure_project(workspace, project_id)?;
+        if let Some(material_id) = material_id {
+            ensure_material(workspace, material_id)?;
+        }
+        let geometry = workspace
+            .manifest
+            .geometries
+            .iter_mut()
+            .find(|geometry| geometry.id == geometry_id)
+            .ok_or_else(|| AppError::GeometryNotFound(geometry_id.to_string()))?;
+        geometry.material_id = material_id;
+        workspace.manifest.updated_at = Utc::now();
+        stage_workspace(workspace)?;
+        self.dirty = true;
+        Ok(summarize(workspace))
+    }
+
+    pub fn import_materials(
+        &mut self,
+        project_id: Uuid,
+        source_path: &Path,
+    ) -> AppResult<ProjectSummary> {
+        let imported = material_io::import_materials(source_path)?;
+        let workspace = self.workspaces.current_mut()?;
+        ensure_project(workspace, project_id)?;
+        for material in &imported {
+            validate_material(material)?;
+        }
+        workspace.manifest.materials.extend(imported);
+        workspace.manifest.updated_at = Utc::now();
+        stage_workspace(workspace)?;
+        self.dirty = true;
+        Ok(summarize(workspace))
+    }
+
+    pub fn export_materials(
+        &self,
+        project_id: Uuid,
+        material_ids: &[Uuid],
+        destination: &Path,
+    ) -> AppResult<String> {
+        let workspace = self.workspaces.current()?;
+        ensure_project(workspace, project_id)?;
+        let materials = if material_ids.is_empty() {
+            workspace.manifest.materials.clone()
+        } else {
+            material_ids
+                .iter()
+                .map(|id| ensure_material(workspace, *id).cloned())
+                .collect::<AppResult<Vec<_>>>()?
+        };
+        material_io::export_materials(destination, &materials)?;
+        Ok(destination.to_string_lossy().into_owned())
+    }
+
     pub fn get_geometry_data(&self, project_id: Uuid, geometry_id: Uuid) -> AppResult<Vec<u8>> {
         let workspace = self.workspaces.current()?;
         ensure_project(workspace, project_id)?;
@@ -655,6 +788,72 @@ fn ensure_geometry(workspace: &OpenWorkspace, geometry_id: Uuid) -> AppResult<&G
         .ok_or_else(|| AppError::GeometryNotFound(geometry_id.to_string()))
 }
 
+fn ensure_material(workspace: &OpenWorkspace, material_id: Uuid) -> AppResult<&Material> {
+    workspace
+        .manifest
+        .materials
+        .iter()
+        .find(|material| material.id == material_id)
+        .ok_or_else(|| AppError::MaterialNotFound(material_id.to_string()))
+}
+
+fn validate_material(material: &Material) -> AppResult<()> {
+    if material.name.trim().is_empty() {
+        return Err(AppError::InvalidMaterial(
+            "A material name is required.".to_owned(),
+        ));
+    }
+    let positive = [
+        ("Density", material.mechanical.density),
+        ("Young's modulus", material.mechanical.youngs_modulus),
+        ("Yield strength", material.mechanical.yield_strength),
+        (
+            "Ultimate tensile strength",
+            material.mechanical.ultimate_tensile_strength,
+        ),
+        (
+            "Thermal conductivity",
+            material.thermal.thermal_conductivity,
+        ),
+        ("Specific heat", material.thermal.specific_heat),
+    ];
+    for (name, value) in positive {
+        if value.is_some_and(|number| !number.is_finite() || number <= 0.0) {
+            return Err(AppError::InvalidMaterial(format!(
+                "{name} must be a positive finite value."
+            )));
+        }
+    }
+    if material
+        .mechanical
+        .poissons_ratio
+        .is_some_and(|value| !value.is_finite() || !(-1.0..0.5).contains(&value))
+    {
+        return Err(AppError::InvalidMaterial(
+            "Poisson's ratio must be at least -1 and less than 0.5.".to_owned(),
+        ));
+    }
+    let appearance = &material.appearance;
+    if appearance.base_color.len() != 7
+        || !appearance.base_color.starts_with('#')
+        || !appearance.base_color[1..]
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+        || [
+            appearance.metalness,
+            appearance.roughness,
+            appearance.opacity,
+        ]
+        .iter()
+        .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+    {
+        return Err(AppError::InvalidMaterial(
+            "Appearance must use a #RRGGBB color and values from 0 to 1.".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn stage_workspace(workspace: &OpenWorkspace) -> AppResult<()> {
     write_models(workspace.root(), &workspace.manifest, &workspace.cases)?;
     generate_solver_files(workspace.root(), &workspace.manifest, &workspace.cases)
@@ -741,6 +940,7 @@ fn summarize(workspace: &OpenWorkspace) -> ProjectSummary {
         cases: workspace.cases.clone(),
         geometries: workspace.manifest.geometries.clone(),
         settings: workspace.manifest.settings.clone(),
+        materials: workspace.manifest.materials.clone(),
     }
 }
 
@@ -869,6 +1069,19 @@ mod tests {
                 .len(),
             32
         );
+        let base_material = imported.materials.first().expect("built-in material");
+        let mut custom_material = base_material.clone();
+        custom_material.id = Uuid::new_v4();
+        custom_material.name = "Wing PLA".to_owned();
+        custom_material.based_on = Some(base_material.id);
+        custom_material.built_in = false;
+        let material_id = custom_material.id;
+        service
+            .upsert_material(project.id, custom_material)
+            .expect("custom material");
+        service
+            .assign_material(project.id, geometry.id, Some(material_id))
+            .expect("material assignment");
 
         let base_case = service
             .create_case(
@@ -906,6 +1119,10 @@ mod tests {
             .open_project(&archive_path)
             .expect("project reopening");
         assert_eq!(reopened.geometries.len(), 1);
+        assert_eq!(reopened.geometries[0].material_id, Some(material_id));
+        assert!(reopened.materials.iter().any(|material| {
+            material.id == material_id && material.based_on == Some(base_material.id)
+        }));
         assert_eq!(reopened.cases[1], variant);
         assert_eq!(
             service

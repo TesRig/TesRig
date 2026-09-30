@@ -17,6 +17,7 @@ import {
   importGeometry,
   removeGeometry,
 } from "../../features/geometry/geometry.api";
+import { MaterialManager } from "../../features/materials/components/MaterialManager";
 import { ProjectOverview } from "../../features/projects/components/ProjectOverview";
 import {
   closeProject,
@@ -45,6 +46,7 @@ export function WorkspaceShell() {
     project?.geometries[0]?.id ?? null,
   );
   const [selectedTreeId, setSelectedTreeId] = useState("geometry");
+  const [materialManagerId, setMaterialManagerId] = useState<string | null | undefined>(undefined);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [caseIoBusy, setCaseIoBusy] = useState(false);
@@ -476,6 +478,15 @@ export function WorkspaceShell() {
             Add mate
           </Button>
         </div>
+        <div className={`command-group ${materialManagerId !== undefined ? "is-context" : ""}`}>
+          <span className="command-group__label">Materials</span>
+          <Button variant="ghost" onClick={() => setMaterialManagerId(null)} disabled={busy}>
+            <span className="command-icon" aria-hidden="true">
+              ◐
+            </span>
+            Material library
+          </Button>
+        </div>
         <div className={`command-group ${activeCase ? "is-context" : ""}`}>
           <span className="command-group__label">Case</span>
           <Button variant="ghost" onClick={() => startNewCase()} disabled={busy}>
@@ -619,6 +630,34 @@ export function WorkspaceShell() {
                 </details>
 
                 <details className="project-tree__branch" open>
+                  <summary
+                    className={selectedTreeId === "materials" ? "is-active" : ""}
+                    onClick={() => setSelectedTreeId("materials")}
+                    onDoubleClick={() => setMaterialManagerId(null)}
+                  >
+                    <span className="tree-icon">◐</span>
+                    <span>Materials</span>
+                    <small>{project.materials.length}</small>
+                  </summary>
+                  {project.materials.map((material) => (
+                    <button
+                      key={material.id}
+                      type="button"
+                      className={`project-tree__leaf ${selectedTreeId === `material:${material.id}` ? "is-selected" : ""}`}
+                      onClick={() => setSelectedTreeId(`material:${material.id}`)}
+                      onDoubleClick={() => setMaterialManagerId(material.id)}
+                    >
+                      <span
+                        className="tree-icon tree-icon--material"
+                        style={{ backgroundColor: material.appearance.baseColor }}
+                      />
+                      <span>{material.name}</span>
+                      <small>{material.category}</small>
+                    </button>
+                  ))}
+                </details>
+
+                <details className="project-tree__branch" open>
                   <summary>
                     <span className="tree-icon">▤</span>
                     <span>Cases</span>
@@ -708,6 +747,16 @@ export function WorkspaceShell() {
         busy={busy || caseIoBusy || clearingSimulationLog || autosaving}
         onViewLogs={openSimulationLogs}
       />
+      {materialManagerId !== undefined ? (
+        <MaterialManager
+          project={project}
+          initialMaterialId={materialManagerId}
+          initialGeometryId={selectedGeometry?.id ?? null}
+          onProjectChange={syncProject}
+          onStatus={reportStatus}
+          onClose={() => setMaterialManagerId(undefined)}
+        />
+      ) : null}
       {noResultsCaseName && (
         <Modal title="No results to show" onClose={() => setNoResultsCaseName(null)}>
           <div className="modal__body">

@@ -4,7 +4,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { ViewHelper } from "three/examples/jsm/helpers/ViewHelper.js";
 import { toUserMessage } from "../../../lib/errors/app-error";
 import type { BoundaryBox } from "../../cases/case.types";
-import type { GeometryAsset, UpAxis } from "../../projects/project.types";
+import type { GeometryAsset, MaterialAppearance, UpAxis } from "../../projects/project.types";
 import { BoundaryBoxControlsProvider } from "../boundary-box-controls";
 import { getGeometryData } from "../geometry.api";
 import { createGeometryModel } from "../geometry-model";
@@ -31,6 +31,7 @@ interface GeometryViewerProps {
   boundaryFaceColors?: Readonly<Record<string, number>>;
   surfaceColors?: Readonly<Record<string, number>>;
   defaultSurfaceColor?: number;
+  defaultMaterialAppearance?: MaterialAppearance;
   showFlowDirection?: boolean;
   selectedInletVelocity?: [number, number, number] | null;
   onBoundaryBoxChange?: (boundaryBox: BoundaryBox) => void;
@@ -240,12 +241,17 @@ export function GeometryViewer({
   boundaryFaceColors,
   surfaceColors,
   defaultSurfaceColor,
+  defaultMaterialAppearance,
   showFlowDirection = false,
   selectedInletVelocity,
   onBoundaryBoxChange,
   leftPanel,
   children,
 }: GeometryViewerProps) {
+  const materialBaseColor = defaultMaterialAppearance?.baseColor;
+  const materialMetalness = defaultMaterialAppearance?.metalness;
+  const materialRoughness = defaultMaterialAppearance?.roughness;
+  const materialOpacity = defaultMaterialAppearance?.opacity;
   const containerRef = useRef<HTMLDivElement>(null);
   const geometryRef = useRef(geometry);
   geometryRef.current = geometry;
@@ -806,12 +812,28 @@ export function GeometryViewer({
           if (!(object instanceof THREE.Mesh)) return;
           const surface = object.userData.tesrigSurface as string | undefined;
           const color = (surface ? surfaceColors?.[surface] : undefined) ?? defaultSurfaceColor;
-          if (color === undefined) return;
           const materials = Array.isArray(object.material) ? object.material : [object.material];
           materials.forEach((material) => {
             if (!(material instanceof THREE.MeshStandardMaterial)) return;
-            material.color.setHex(color);
-            material.emissive.setHex(color).multiplyScalar(0.18);
+            if (color !== undefined) {
+              material.color.setHex(color);
+              material.emissive.setHex(color).multiplyScalar(0.18);
+            } else if (materialBaseColor) {
+              material.color.set(materialBaseColor);
+              material.emissive.set(materialBaseColor).multiplyScalar(0.12);
+            }
+            if (
+              materialMetalness !== undefined &&
+              materialRoughness !== undefined &&
+              materialOpacity !== undefined
+            ) {
+              material.metalness = materialMetalness;
+              material.roughness = materialRoughness;
+              material.opacity = materialOpacity;
+              material.transparent = materialOpacity < 1;
+              material.depthWrite = materialOpacity >= 1;
+              material.needsUpdate = true;
+            }
           });
         });
         applySurfaceSelection(selectedSurfaceValueRef.current ?? null);
@@ -896,6 +918,10 @@ export function GeometryViewer({
     geometry.id,
     geometry.name,
     geometryData,
+    materialBaseColor,
+    materialMetalness,
+    materialOpacity,
+    materialRoughness,
     onSurfaceSelect,
     projectId,
     surfaceColors,

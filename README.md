@@ -59,6 +59,7 @@ Create an installer with `pnpm tauri build`.
 - `src-tauri/src/solver` — OpenFOAM adapter, case generator, and runtime discovery
 - `src-tauri/resources/openfoam` — bundled Windows-native OpenFOAM v2606 runtime and fallback launchers
 - `docs/architecture.md` — ownership and persistence design
+- `docs/materials.md` — material properties, interchange formats, units, and catalog provenance
 
 The current milestone generates, runs, and exports OpenFOAM cases. Windows simulations run natively,
 report stage/time-derived progress, and expose live logs from the status bar. Completed native runs

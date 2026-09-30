@@ -21,6 +21,7 @@ export function ProjectOverview({
 }: ProjectOverviewProps) {
   const selected =
     project.geometries.find(({ id }) => id === selectedGeometryId) ?? project.geometries[0];
+  const assignedMaterial = project.materials.find(({ id }) => id === selected?.materialId);
 
   if (selected) {
     return (
@@ -32,6 +33,7 @@ export function ProjectOverview({
           onGeometryChange={onGeometryChange}
           upAxis={project.settings.upAxis}
           onUpAxisChange={onUpAxisChange}
+          defaultMaterialAppearance={assignedMaterial?.appearance}
         />
       </section>
     );

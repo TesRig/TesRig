@@ -34,7 +34,7 @@ application exposes no generic read, write, shell, or execute command.
 `.tsrig` is a portable ZIP archive. Format version 1 contains:
 
 ```text
-project.json
+project.json (including materials and geometry-to-material assignments)
 cases/<case-uuid>/case.json
 cases/<case-uuid>/openfoam/{0,constant,system}/
 cases/<case-uuid>/openfoam/{Allmesh,Allrun,Allrun-windows.cmd,TesRig.foam}
@@ -48,6 +48,11 @@ scripts/
 
 `project.json` contains portable project metadata and small case references. Full case metadata
 lives under its UUID directory. Absolute machine paths are never written into either model.
+
+Project material definitions are solver-neutral and use SI units. They include physical simulation
+properties, viewport appearance, provenance, and derivation lineage. Geometry-level assignments are
+stored on the geometry asset so a future CalculiX adapter can resolve the material independently of
+the React UI. See `docs/materials.md` for the interchange contract.
 
 Opening a project extracts it to a uniquely named OS temporary directory managed by
 `WorkspaceService`. Changes are written to this workspace and then recompressed into the original

@@ -13,7 +13,7 @@ import {
   type CameraProjection,
   type ViewerCamera,
 } from "../../geometry/viewer-camera";
-import type { GeometryAsset, UpAxis } from "../../projects/project.types";
+import type { GeometryAsset, MaterialAppearance, UpAxis } from "../../projects/project.types";
 import type { CfdSetup, FlowSnapshot } from "../case.types";
 import { listFlowVisualizationExtensions } from "../flow-extension-api";
 import { resolveFlowDirection } from "../flow-direction";
@@ -45,6 +45,7 @@ interface ProbeSettings {
 interface FlowResultsViewerProps {
   projectId: string;
   geometry: GeometryAsset;
+  defaultMaterialAppearance?: MaterialAppearance;
   setup: CfdSetup;
   snapshot: FlowSnapshot | null;
   isPreview: boolean;
@@ -831,6 +832,7 @@ function displayNumber(value: number | undefined, unit: string) {
 export function FlowResultsViewer({
   projectId,
   geometry,
+  defaultMaterialAppearance,
   setup,
   snapshot,
   isPreview,
@@ -845,6 +847,10 @@ export function FlowResultsViewer({
   leftPanel,
   children,
 }: FlowResultsViewerProps) {
+  const materialBaseColor = defaultMaterialAppearance?.baseColor;
+  const materialMetalness = defaultMaterialAppearance?.metalness;
+  const materialRoughness = defaultMaterialAppearance?.roughness;
+  const materialOpacity = defaultMaterialAppearance?.opacity;
   const containerRef = useRef<HTMLDivElement>(null);
   const geometryRef = useRef(geometry);
   geometryRef.current = geometry;
@@ -1186,6 +1192,27 @@ export function FlowResultsViewer({
           if (object instanceof THREE.Mesh) {
             surfaceIndex += 1;
             object.userData.tesrigSurface = object.name.trim() || `Surface ${surfaceIndex}`;
+            if (
+              materialBaseColor &&
+              materialMetalness !== undefined &&
+              materialRoughness !== undefined &&
+              materialOpacity !== undefined
+            ) {
+              const materials = Array.isArray(object.material)
+                ? object.material
+                : [object.material];
+              materials.forEach((material) => {
+                if (!(material instanceof THREE.MeshStandardMaterial)) return;
+                material.color.set(materialBaseColor);
+                material.emissive.set(materialBaseColor).multiplyScalar(0.12);
+                material.metalness = materialMetalness;
+                material.roughness = materialRoughness;
+                material.opacity = materialOpacity;
+                material.transparent = materialOpacity < 1;
+                material.depthWrite = materialOpacity >= 1;
+                material.needsUpdate = true;
+              });
+            }
           }
         });
         scene.add(model);
@@ -1289,7 +1316,18 @@ export function FlowResultsViewer({
         container.removeChild(renderer.domElement);
     };
     // Scene recreation is limited to assets and coordinate-system changes.
-  }, [cameraProjection, geometry.format, geometry.id, onSurfaceSelect, projectId, upAxis]);
+  }, [
+    cameraProjection,
+    geometry.format,
+    geometry.id,
+    materialBaseColor,
+    materialMetalness,
+    materialOpacity,
+    materialRoughness,
+    onSurfaceSelect,
+    projectId,
+    upAxis,
+  ]);
 
   useEffect(() => {
     const state = sceneRef.current;

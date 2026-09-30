@@ -1,5 +1,6 @@
 use super::case::SimulationCase;
 use super::geometry::GeometryAsset;
+use super::material::{default_material_library, Material};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -35,7 +36,7 @@ impl From<&SimulationCase> for CaseReference {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectManifest {
     pub format_version: u32,
@@ -47,6 +48,8 @@ pub struct ProjectManifest {
     pub cases: Vec<CaseReference>,
     #[serde(default)]
     pub geometries: Vec<GeometryAsset>,
+    #[serde(default = "default_material_library")]
+    pub materials: Vec<Material>,
     #[serde(default)]
     pub settings: ProjectSettings,
 }
@@ -63,6 +66,7 @@ impl ProjectManifest {
             updated_at: now,
             cases: Vec::new(),
             geometries: Vec::new(),
+            materials: default_material_library(),
             settings: ProjectSettings::default(),
         }
     }
@@ -80,5 +84,6 @@ pub struct ProjectSummary {
     pub archive_path: String,
     pub cases: Vec<SimulationCase>,
     pub geometries: Vec<GeometryAsset>,
+    pub materials: Vec<Material>,
     pub settings: ProjectSettings,
 }

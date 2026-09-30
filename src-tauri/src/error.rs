@@ -9,6 +9,12 @@ pub enum AppError {
     InvalidCaseName,
     #[error("Select an STL, OBJ, STEP, or STP geometry file.")]
     UnsupportedGeometryFormat,
+    #[error("Select a JSON, MatML XML, or CalculiX/Abaqus INP material file.")]
+    UnsupportedMaterialFormat,
+    #[error("The material definition is invalid: {0}")]
+    InvalidMaterial(String),
+    #[error("Material was not found: {0}")]
+    MaterialNotFound(String),
     #[error("Geometry was not found: {0}")]
     GeometryNotFound(String),
     #[error("The selected file is not a valid TesRig project.")]
@@ -57,6 +63,9 @@ impl AppError {
             Self::InvalidProjectName => "INVALID_PROJECT_NAME",
             Self::InvalidCaseName => "INVALID_CASE_NAME",
             Self::UnsupportedGeometryFormat => "UNSUPPORTED_GEOMETRY_FORMAT",
+            Self::UnsupportedMaterialFormat => "UNSUPPORTED_MATERIAL_FORMAT",
+            Self::InvalidMaterial(_) => "INVALID_MATERIAL",
+            Self::MaterialNotFound(_) => "MATERIAL_NOT_FOUND",
             Self::GeometryNotFound(_) => "GEOMETRY_NOT_FOUND",
             Self::InvalidProjectFormat => "INVALID_PROJECT_FORMAT",
             Self::ProjectNotFound(_) => "PROJECT_NOT_FOUND",
