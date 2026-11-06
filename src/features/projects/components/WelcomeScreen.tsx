@@ -7,7 +7,7 @@ import { chooseProjectToOpen, openProject } from "../project.api";
 import { NewProjectDialog } from "./NewProjectDialog";
 
 export function WelcomeScreen() {
-  const { setProject } = useWorkspace();
+  const { setProject, workspaceReady, workspaceError, retryWorkspace } = useWorkspace();
   const [showNewProject, setShowNewProject] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -43,13 +43,26 @@ export function WelcomeScreen() {
           engineering workflow.
         </p>
         <div className="welcome__actions">
-          <Button variant="primary" onClick={() => setShowNewProject(true)} disabled={busy}>
+          <Button
+            variant="primary"
+            onClick={() => setShowNewProject(true)}
+            disabled={busy || !workspaceReady}
+          >
             New Project
           </Button>
-          <Button onClick={handleOpen} disabled={busy}>
+          <Button onClick={handleOpen} disabled={busy || !workspaceReady}>
             {busy ? "Opening project…" : "Open Project"}
           </Button>
         </div>
+        {!workspaceReady && !workspaceError && <p role="status">Connecting to workspace…</p>}
+        {workspaceError && (
+          <div className="welcome__error">
+            <p className="form-error" role="alert">
+              {workspaceError}
+            </p>
+            <Button onClick={retryWorkspace}>Try again</Button>
+          </div>
+        )}
         {error && <p className="form-error welcome__error">{error}</p>}
         <div className="recent-projects">
           <span className="recent-projects__label">Recent projects</span>

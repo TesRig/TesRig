@@ -10,10 +10,14 @@ import {
 import type { SimulationCase } from "../features/cases/case.types";
 import type { ProjectSummary } from "../features/projects/project.types";
 import { getCurrentProject } from "../features/projects/project.api";
+import { isTauri } from "@tauri-apps/api/core";
+import { toUserMessage } from "../lib/errors/app-error";
 
 interface WorkspaceContextValue {
   project: ProjectSummary | null;
   workspaceReady: boolean;
+  workspaceError: string | null;
+  retryWorkspace: () => void;
   activeCaseId: string | null;
   activeCase: SimulationCase | null;
   setProject: (project: ProjectSummary | null) => void;
@@ -28,23 +32,45 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
   const [project, setProjectState] = useState<ProjectSummary | null>(null);
   const [activeCaseId, setActiveCaseId] = useState<string | null>(null);
   const [workspaceReady, setWorkspaceReady] = useState(false);
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [startupAttempt, setStartupAttempt] = useState(0);
+
+  const retryWorkspace = useCallback(() => {
+    setWorkspaceError(null);
+    setStartupAttempt((attempt) => attempt + 1);
+  }, []);
 
   useEffect(() => {
+    if (!isTauri()) {
+      setWorkspaceReady(true);
+      return;
+    }
+
     let disposed = false;
+    const timeout = window.setTimeout(() => {
+      disposed = true;
+      setWorkspaceError("The workspace did not respond. Try connecting again.");
+    }, 10_000);
     void getCurrentProject()
       .then((current) => {
-        if (disposed || !current) return;
-        setProjectState(current);
-        setActiveCaseId(current.cases[0]?.id ?? null);
+        if (disposed) return;
+        if (current) {
+          setProjectState(current);
+          setActiveCaseId(current.cases[0]?.id ?? null);
+        }
+        setWorkspaceReady(true);
       })
-      .catch(() => undefined)
+      .catch((error: unknown) => {
+        if (!disposed) setWorkspaceError(toUserMessage(error));
+      })
       .finally(() => {
-        if (!disposed) setWorkspaceReady(true);
+        window.clearTimeout(timeout);
       });
     return () => {
       disposed = true;
+      window.clearTimeout(timeout);
     };
-  }, []);
+  }, [startupAttempt]);
 
   const setProject = useCallback((nextProject: ProjectSummary | null) => {
     setProjectState(nextProject);
@@ -78,6 +104,8 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
     () => ({
       project,
       workspaceReady,
+      workspaceError,
+      retryWorkspace,
       activeCaseId,
       activeCase,
       setProject,
@@ -85,7 +113,17 @@ export function WorkspaceProvider({ children }: PropsWithChildren) {
       addCase,
       syncProject,
     }),
-    [project, workspaceReady, activeCaseId, activeCase, setProject, addCase, syncProject],
+    [
+      project,
+      workspaceReady,
+      workspaceError,
+      retryWorkspace,
+      activeCaseId,
+      activeCase,
+      setProject,
+      addCase,
+      syncProject,
+    ],
   );
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;
